@@ -5,7 +5,7 @@ import { defineConfig } from "vite";
 
 // GitHub Pages deploys to: https://mianmian76.github.io/treasurehunt/
 // Set GITHUB_PAGES=true in CI to enable the sub-path base.
-const isGitHubPages = process.env.GITHUB_PAGES === "true";
+const isGitHubPages = process.env.GITHUB_PAGES === "true" || process.env.GITHUB_PAGES === "1" || String(process.env.GITHUB_PAGES).toLowerCase() === "true";
 
 export default defineConfig({
   base: isGitHubPages ? "/treasurehunt/" : "/",
