@@ -95,8 +95,8 @@ treasure-hunt/
 
 ```bash
 # 克隆仓库
-git clone https://github.com/your-username/treasure-hunt-platform.git
-cd treasure-hunt-platform
+git clone https://github.com/mianmian76/treasurehunt.git
+cd treasurehunt
 
 # 安装依赖
 pnpm install
