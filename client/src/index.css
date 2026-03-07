@@ -1,0 +1,343 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+
+  /* Custom treasure hunt colors */
+  --color-gold: var(--gold);
+  --color-gold-dim: var(--gold-dim);
+  --color-signal-1: var(--signal-1);
+  --color-signal-2: var(--signal-2);
+  --color-signal-3: var(--signal-3);
+  --color-path: var(--path);
+  --color-eliminated: var(--eliminated);
+  --color-node: var(--node);
+  --color-node-hover: var(--node-hover);
+  --color-player: var(--player);
+}
+
+:root {
+  /* Dark navy theme - deep sea expedition */
+  --radius: 0.5rem;
+  --background: oklch(0.14 0.04 240);
+  --foreground: oklch(0.92 0.02 65);
+  --card: oklch(0.18 0.035 240);
+  --card-foreground: oklch(0.92 0.02 65);
+  --popover: oklch(0.18 0.035 240);
+  --popover-foreground: oklch(0.92 0.02 65);
+  --primary: oklch(0.75 0.15 65);
+  --primary-foreground: oklch(0.14 0.04 240);
+  --secondary: oklch(0.22 0.04 240);
+  --secondary-foreground: oklch(0.80 0.02 65);
+  --muted: oklch(0.20 0.03 240);
+  --muted-foreground: oklch(0.60 0.03 240);
+  --accent: oklch(0.25 0.05 240);
+  --accent-foreground: oklch(0.92 0.02 65);
+  --destructive: oklch(0.65 0.18 25);
+  --destructive-foreground: oklch(0.98 0 0);
+  --border: oklch(0.30 0.05 240);
+  --input: oklch(0.22 0.04 240);
+  --ring: oklch(0.75 0.15 65);
+
+  /* Treasure hunt specific */
+  --gold: oklch(0.75 0.15 65);
+  --gold-dim: oklch(0.60 0.10 65);
+  --signal-1: oklch(0.65 0.22 25);
+  --signal-2: oklch(0.70 0.18 65);
+  --signal-3: oklch(0.65 0.18 160);
+  --path: oklch(0.65 0.15 220);
+  --eliminated: oklch(0.35 0.02 240);
+  --node: oklch(0.25 0.05 240);
+  --node-hover: oklch(0.35 0.08 240);
+  --player: oklch(0.75 0.15 65);
+
+  --chart-1: oklch(0.75 0.15 65);
+  --chart-2: oklch(0.65 0.18 160);
+  --chart-3: oklch(0.65 0.15 220);
+  --chart-4: oklch(0.65 0.18 25);
+  --chart-5: oklch(0.60 0.12 300);
+
+  --sidebar: oklch(0.16 0.04 240);
+  --sidebar-foreground: oklch(0.92 0.02 65);
+  --sidebar-primary: oklch(0.75 0.15 65);
+  --sidebar-primary-foreground: oklch(0.14 0.04 240);
+  --sidebar-accent: oklch(0.22 0.04 240);
+  --sidebar-accent-foreground: oklch(0.92 0.02 65);
+  --sidebar-border: oklch(0.30 0.05 240);
+  --sidebar-ring: oklch(0.75 0.15 65);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-family: 'Noto Sans SC', sans-serif;
+  }
+  button:not(:disabled),
+  [role="button"]:not([aria-disabled="true"]),
+  [type="button"]:not(:disabled),
+  [type="submit"]:not(:disabled),
+  [type="reset"]:not(:disabled),
+  a[href],
+  select:not(:disabled),
+  input[type="checkbox"]:not(:disabled),
+  input[type="radio"]:not(:disabled) {
+    @apply cursor-pointer;
+  }
+
+  h1, h2, h3 {
+    font-family: 'Cinzel', serif;
+  }
+
+  code, .mono {
+    font-family: 'IBM Plex Mono', monospace;
+  }
+}
+
+@layer components {
+  .container {
+    width: 100%;
+    margin-left: auto;
+    margin-right: auto;
+    padding-left: 1rem;
+    padding-right: 1rem;
+  }
+
+  .flex {
+    min-height: 0;
+    min-width: 0;
+  }
+
+  @media (min-width: 640px) {
+    .container {
+      padding-left: 1.5rem;
+      padding-right: 1.5rem;
+    }
+  }
+
+  @media (min-width: 1024px) {
+    .container {
+      padding-left: 2rem;
+      padding-right: 2rem;
+      max-width: 1400px;
+    }
+  }
+}
+
+/* Custom animations */
+@keyframes pulse-gold {
+  0%, 100% { box-shadow: 0 0 0 0 oklch(0.75 0.15 65 / 0.4); }
+  50% { box-shadow: 0 0 0 8px oklch(0.75 0.15 65 / 0); }
+}
+
+@keyframes ripple {
+  0% { transform: scale(0.8); opacity: 1; }
+  100% { transform: scale(2.5); opacity: 0; }
+}
+
+@keyframes path-dash {
+  to { stroke-dashoffset: 0; }
+}
+
+@keyframes node-appear {
+  0% { transform: scale(0); opacity: 0; }
+  60% { transform: scale(1.3); opacity: 1; }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+@keyframes float {
+  0%, 100% { transform: translateY(0px); }
+  50% { transform: translateY(-6px); }
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% center; }
+  100% { background-position: 200% center; }
+}
+
+.animate-pulse-gold {
+  animation: pulse-gold 2s infinite;
+}
+
+.animate-float {
+  animation: float 3s ease-in-out infinite;
+}
+
+.animate-shimmer {
+  background: linear-gradient(90deg, transparent 0%, oklch(0.75 0.15 65 / 0.3) 50%, transparent 100%);
+  background-size: 200% 100%;
+  animation: shimmer 2s infinite;
+}
+
+/* Map grid styles */
+.map-grid {
+  display: grid;
+  grid-template-columns: repeat(10, 1fr);
+  gap: 2px;
+}
+
+.map-node {
+  aspect-ratio: 1;
+  border-radius: 4px;
+  transition: all 0.2s ease;
+  cursor: pointer;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 0.55rem;
+  font-weight: 500;
+}
+
+.map-node.active {
+  background: oklch(0.25 0.05 240);
+  border: 1px solid oklch(0.35 0.06 240);
+  color: oklch(0.70 0.03 240);
+}
+
+.map-node.active:hover {
+  background: oklch(0.30 0.07 240);
+  border-color: oklch(0.50 0.10 240);
+  color: oklch(0.85 0.03 240);
+}
+
+.map-node.inactive {
+  background: transparent;
+  border: 1px solid transparent;
+}
+
+.map-node.player {
+  background: oklch(0.75 0.15 65);
+  border-color: oklch(0.85 0.18 65);
+  color: oklch(0.14 0.04 240);
+  animation: pulse-gold 2s infinite;
+  font-weight: 700;
+}
+
+.map-node.treasure {
+  background: oklch(0.65 0.18 65);
+  border-color: oklch(0.80 0.20 65);
+  color: oklch(0.14 0.04 240);
+  font-weight: 700;
+}
+
+.map-node.candidate-high {
+  background: oklch(0.28 0.08 160);
+  border-color: oklch(0.50 0.15 160);
+  color: oklch(0.75 0.15 160);
+}
+
+.map-node.candidate-medium {
+  background: oklch(0.26 0.06 65);
+  border-color: oklch(0.45 0.12 65);
+  color: oklch(0.70 0.12 65);
+}
+
+.map-node.candidate-low {
+  background: oklch(0.24 0.04 240);
+  border-color: oklch(0.38 0.07 240);
+  color: oklch(0.60 0.05 240);
+}
+
+.map-node.eliminated {
+  background: oklch(0.18 0.02 240);
+  border-color: oklch(0.25 0.03 240);
+  color: oklch(0.40 0.02 240);
+  opacity: 0.5;
+}
+
+.map-node.path {
+  background: oklch(0.25 0.07 220);
+  border-color: oklch(0.55 0.15 220);
+  color: oklch(0.75 0.15 220);
+}
+
+.map-node.signal-1 {
+  background: oklch(0.28 0.08 25);
+  border-color: oklch(0.55 0.18 25);
+  color: oklch(0.75 0.18 25);
+}
+
+.map-node.signal-2 {
+  background: oklch(0.27 0.07 65);
+  border-color: oklch(0.55 0.15 65);
+  color: oklch(0.75 0.15 65);
+}
+
+.map-node.signal-3 {
+  background: oklch(0.26 0.06 160);
+  border-color: oklch(0.50 0.15 160);
+  color: oklch(0.70 0.15 160);
+}
+
+/* Panel styles */
+.panel-card {
+  background: oklch(0.18 0.035 240);
+  border: 1px solid oklch(0.28 0.05 240);
+  border-radius: 8px;
+}
+
+.gold-text {
+  color: oklch(0.75 0.15 65);
+}
+
+.gold-border {
+  border-color: oklch(0.75 0.15 65);
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: oklch(0.16 0.03 240);
+}
+::-webkit-scrollbar-thumb {
+  background: oklch(0.35 0.06 240);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: oklch(0.45 0.08 240);
+}
