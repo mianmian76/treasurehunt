@@ -1,4 +1,4 @@
-# 寻箱决策平台 — Treasure Hunt Decision Engine
+# 【大修中！！！！】寻箱决策平台 — Treasure Hunt Decision Engine
 https://mianmian76.github.io/treasurehunt/
 
 > 基于 BFS 最短路径 + 贝叶斯过滤推理的智能决策助手，帮助你以最少步数找到全部 4 个宝藏。
