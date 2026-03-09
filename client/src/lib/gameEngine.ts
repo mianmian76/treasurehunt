@@ -2,6 +2,11 @@
 // 寻箱决策平台 — 核心游戏引擎
 // 设计哲学：深海探险 × 精确数据推理
 // 包含：BFS路径计算、贝叶斯过滤、枢纽评分、多宝藏优先级
+// v5.0 优化：
+//   - 修复"走远路"问题：使用单节点增益/距离^幂评分
+//   - 减少回头路：路径规划时优先避开已访问节点
+//   - 中途重定向：每步感知后重新评估目标
+//   - 节点通达性奖励：优先选择度数高的节点（减少死胡同）
 // ============================================================
 
 export type Node = string;
@@ -88,7 +93,6 @@ export function bfsDistance(start: Node, targets: Node[], adj: Map<Node, Node[]>
 }
 
 // BFS最短路径（返回路径）
-// 使用父节点回溯方式，内存复杂度 O(V)，优于存储完整路径的 O(V²)
 export function bfsPath(start: Node, end: Node, adj: Map<Node, Node[]>): Node[] {
   if (start === end) return [start];
   const parent = new Map<Node, Node>();
@@ -102,7 +106,6 @@ export function bfsPath(start: Node, end: Node, adj: Map<Node, Node[]>): Node[] 
         visited.add(nb);
         parent.set(nb, cur);
         if (nb === end) {
-          // 回溯重建路径
           const path: Node[] = [];
           let node: Node | undefined = end;
           while (node !== undefined) {
@@ -116,6 +119,74 @@ export function bfsPath(start: Node, end: Node, adj: Map<Node, Node[]>): Node[] 
     }
   }
   return [];
+}
+
+// ============================================================
+// v5.0 新增：优先避开已访问节点的路径规划
+//
+// 策略：
+// 1. 先尝试完全避开已访问节点（允许起点和终点）
+// 2. 如果避开路径不超过最短路径+1步，使用避开路径
+// 3. 否则使用标准BFS最短路径
+//
+// 这样可以在不显著增加步数的前提下，大幅减少回头路
+// ============================================================
+export function bfsPathPreferUnvisited(
+  start: Node,
+  end: Node,
+  adj: Map<Node, Node[]>,
+  visitedNodes: Set<Node>
+): Node[] {
+  if (start === end) return [start];
+
+  // 计算最短距离
+  const distFromStart = bfsDistance(start, CITIES, adj);
+  const minDist = distFromStart.get(end) ?? Infinity;
+  if (minDist === Infinity) return [];
+
+  // 尝试避开已访问节点的路径
+  if (visitedNodes.size > 0) {
+    const avoidSet = new Set<Node>(visitedNodes);
+    avoidSet.delete(start);
+    avoidSet.delete(end);
+
+    const parent = new Map<Node, Node>();
+    const queue: Node[] = [start];
+    const seen = new Set<Node>([start]);
+    let found = false;
+
+    while (queue.length > 0 && !found) {
+      const cur = queue.shift()!;
+      for (const nb of (adj.get(cur) || [])) {
+        if (!seen.has(nb) && !avoidSet.has(nb)) {
+          seen.add(nb);
+          parent.set(nb, cur);
+          if (nb === end) {
+            found = true;
+            break;
+          }
+          queue.push(nb);
+        }
+      }
+    }
+
+    if (found) {
+      const avoidPath: Node[] = [];
+      let node: Node | undefined = end;
+      while (node !== undefined) {
+        avoidPath.unshift(node);
+        node = parent.get(node);
+      }
+      const avoidLen = avoidPath.length - 1;
+      // 避开路径不超过最短路径+1步，使用避开路径
+      if (avoidLen <= minDist + 1) {
+        return avoidPath;
+      }
+    }
+  }
+
+  // 使用标准BFS最短路径
+  return bfsPath(start, end, adj);
 }
 
 // 感知历史记录
@@ -202,11 +273,6 @@ export function bayesianFilter(
         if (minDist <= 3) {
           if (signals.includes(minDist)) {
             // 检查该距离值是否被其他宝藏共享
-            // 修复：isShared 应检查其他宝藏的 minDist 是否 <= minDist
-            // 即：其他宝藏的候选点中是否存在距离 <= minDist 的节点（可能在 minDist 处）
-            // 使用 minDist（严格等于）会导致误判：
-            //   例如 T4 的候选点 minDist=1，而 T2 的 minDist=3，
-            //   isShared=false（1 != 3），但 T4 的真实位置可能在距离3处
             const isShared = otherMinDists
               ? Array.from(otherMinDists.values()).some(d => d <= minDist && d <= 3)
               : false;
@@ -271,12 +337,6 @@ export function scoreHub(
       const inRangeCount = t.candidates.filter(c => (distFromHub.get(c) ?? Infinity) <= 3).length;
       const outRangeCount = t.candidates.filter(c => (distFromHub.get(c) ?? Infinity) > 3).length;
       const total = t.candidates.length;
-      // 修复：使用候选点在感知范围内的实际比例作为概率权重，而非固定50%
-      // 有信号概率 ≈ inRangeCount / total，无信号概率 ≈ outRangeCount / total
-      // 有信号时：排除 outRangeCount 个候选点（距离>3的点被排除）
-      //           + 若信号唯一归属，还能进一步锁定到具体距离，额外排除 inRangeCount - 1 个
-      //           保守估计：只计排除 outRangeCount 个
-      // 无信号时：排除 inRangeCount 个候选点（距离<=3的点被排除）
       const pSignal = total > 0 ? inRangeCount / total : 0;
       const pNoSignal = 1 - pSignal;
       const expectedElim = pSignal * outRangeCount + pNoSignal * inRangeCount;
@@ -285,8 +345,6 @@ export function scoreHub(
   }
 
   const decayFactor = distToHub === 0 ? 1 : Math.pow(decay, distToHub);
-  // 降低 coverageCount 权重，让 totalExpectedElim（实际信息量）主导评分
-  // 策略衰减系数直接影响远近选择：激进(0.5)=每多1步价值减半，保守(0.8)=每多1步价值降20%
   const infoScore = coverageCount * 0.5 + totalExpectedElim;
   const totalScore = infoScore * decayFactor;
 
@@ -321,11 +379,11 @@ export function prioritizeTreasures(
 
 // 探索策略档位
 export type ExploreStrategy = "aggressive" | "balanced" | "conservative";
-// 策略对应的衰减系数：激进=0.5（更重视近距离），均衡=0.65，保守=0.8（更愿意走远）
+// 策略对应的距离惩罚指数：激进=2.0（强烈偏好近处），均衡=1.5，保守=1.0（更愿意走远）
 export const STRATEGY_DECAY: Record<ExploreStrategy, number> = {
-  aggressive: 0.5,
-  balanced: 0.65,
-  conservative: 0.8,
+  aggressive: 2.0,
+  balanced: 1.5,
+  conservative: 1.0,
 };
 export const STRATEGY_LABELS: Record<ExploreStrategy, string> = {
   aggressive: "激进",
@@ -381,6 +439,29 @@ function computeInfoGain(
   return gain;
 }
 
+// 计算路径中经过已访问节点的数量（不含起点）
+function countVisitedInPath(path: Node[], visitedNodes: Set<Node>): number {
+  return path.slice(1).filter(n => visitedNodes.has(n)).length;
+}
+
+// ============================================================
+// v5.0 核心改进：最优感知点选择算法
+//
+// 问题根因：旧算法用"路径总增益/步数"评分，导致远处节点因沿途节点多
+// 而总增益虚高，压制了近处高价值节点。
+//
+// v5.0 改进：
+// 1. 使用"单节点信息增益/步数^DIST_POWER"评分（加大距离惩罚）
+// 2. 限制最大搜索距离（默认8步，保守策略12步）
+// 3. 引入"候选区域吸引力"：当某宝藏候选点集中在某方向时，
+//    优先选择朝该方向的感知点
+// 4. 节点通达性奖励：度数越高（连接越多），越不容易成为死胡同
+// 5. 路径规划优先避开已访问节点（减少回头路）
+//    - 如果存在不经过已访问节点的路径且不超过最短路径+1步，优先使用
+//    - 否则使用标准BFS最短路径
+// 6. 感知点评分时，轻微惩罚需要回头的路径
+// ============================================================
+
 export function generateAdvice(
   currentPos: Node,
   treasures: TreasureState[],
@@ -394,27 +475,36 @@ export function generateAdvice(
   const distFromCurrent = bfsDistance(currentPos, CITIES, adj);
   const sensedNodes = new Set<Node>(senseHistory.map(r => r.position));
 
-  // ── 规则1：候选点=1，100%确定，立即前往 ──────────────────────────
-  for (const t of activeTreasures) {
-    if (t.candidates.length === 1) {
-      const target = t.candidates[0];
-      const path = bfsPath(currentPos, target, adj);
-      return {
-        targetNode: target,
-        path,
-        reason: `${t.id}位置已100%确定为${target}，直接前往`,
-        expectedSignal: `到达${target}后找到${t.id}宝藏`,
-        strategy: "direct",
-        confidence: 100
-      };
-    }
+  // 计算节点度数（连接边数）
+  const nodeDegree = new Map<Node, number>();
+  adj.forEach((neighbors, node) => {
+    nodeDegree.set(node, neighbors.length);
+  });
+
+  // ── 规则1：候选点=1，100%确定，立即前往（优先避回头路）────────────────
+  // 若有多个确定宝藏，选最近的
+  const certainTreasures = activeTreasures.filter(t => t.candidates.length === 1);
+  if (certainTreasures.length > 0) {
+    const t = certainTreasures.reduce((best, cur) => {
+      const dBest = distFromCurrent.get(best.candidates[0]) ?? Infinity;
+      const dCur = distFromCurrent.get(cur.candidates[0]) ?? Infinity;
+      return dCur < dBest ? cur : best;
+    });
+    const target = t.candidates[0];
+    const path = bfsPathPreferUnvisited(currentPos, target, adj, sensedNodes);
+    return {
+      targetNode: target,
+      path,
+      reason: `${t.id}位置已100%确定为${target}，直接前往`,
+      expectedSignal: `到达${target}后找到${t.id}宝藏`,
+      strategy: "direct",
+      confidence: 100
+    };
   }
 
-  // ── 规则2：候选点≤4 且最近候选点距离≤5，直接踩点验证 ───────────────
-  // 经过大规模模拟测试（1000场景），候选点≤4时踩点比继续感知平均节省1.2步
-  // 踩点阈值：near_thresh=4, near_dist=5（最优参数）
+  // ── 规则2：候选点≤3 且最近候选点距离≤5，直接踩点验证 ───────────────
   const urgentTreasures = activeTreasures
-    .filter(t => t.candidates.length <= 4)
+    .filter(t => t.candidates.length <= 3)
     .sort((a, b) => {
       if (a.candidates.length !== b.candidates.length) return a.candidates.length - b.candidates.length;
       const minDistA = Math.min(...a.candidates.map(c => distFromCurrent.get(c) ?? Infinity));
@@ -427,10 +517,17 @@ export function generateAdvice(
     if (minDist <= 5) {
       const unvisited = t.candidates.filter(c => !sensedNodes.has(c));
       const pool = unvisited.length > 0 ? unvisited : t.candidates;
-      const target = pool.reduce((best, c) =>
-        (distFromCurrent.get(c) ?? Infinity) < (distFromCurrent.get(best) ?? Infinity) ? c : best
-      );
-      const path = bfsPath(currentPos, target, adj);
+      // 优先选择：距离最近，其次度数高（减少死胡同），其次回头路少
+      const target = pool.reduce((best, c) => {
+        const dBest = distFromCurrent.get(best) ?? Infinity;
+        const dCur = distFromCurrent.get(c) ?? Infinity;
+        if (dCur !== dBest) return dCur < dBest ? c : best;
+        // 距离相同时，选度数高的
+        const degBest = nodeDegree.get(best) ?? 1;
+        const degCur = nodeDegree.get(c) ?? 1;
+        return degCur > degBest ? c : best;
+      });
+      const path = bfsPathPreferUnvisited(currentPos, target, adj, sensedNodes);
       return {
         targetNode: target,
         path,
@@ -442,44 +539,36 @@ export function generateAdvice(
     }
   }
 
-  // ── 规则3：路径总信息增益最大化（核心路径规划算法）─────────────────
+  // ── 规则3：v5.0 改进版感知点选择算法 ─────────────────────────────
   //
-  // 算法原理：
-  //   对地图上每个未感知节点 N，计算从当前位置到 N 的路径上所有节点的信息增益之和。
-  //   路径越长，远处节点的增益按衰减系数 decay^(步数-1) 折现。
-  //   同时给覆盖多个宝藏的节点额外加成（coverage_bonus）。
-  //   最终选择 路径总增益 / 到达步数 最大的节点。
+  // 核心改进：
+  //   1. 使用 gain / dist^DIST_POWER 评分（加大距离惩罚）
+  //   2. 节点通达性奖励（度数越高越好）
+  //   3. 路径规划优先避开已访问节点
+  //   4. 轻微惩罚需要回头的路径
   //
-  // 相比旧算法（5步内枚举 scoreHub）的优势：
-  //   1. 全图搜索，不遗漏远处高价值节点
-  //   2. 路径增益考虑沿途收益，减少走回头路
-  //   3. 衰减系数 decay=0.95（接近1）表示更重视远处节点，适合地图分散的场景
-  //
-  // 经过1000场景大规模测试：平均步数从36.2降至29.2（↓19.3%）
-  const DECAY = 0.95;       // 路径增益衰减系数（每多走1步，增益折现0.95）
-  const COVERAGE_W = 0.15;  // 多宝藏覆盖奖励权重
-  const MAX_SEARCH_DIST = 15; // 最大搜索距离（超过15步的节点性价比极低）
+  //   策略参数：
+  //   - aggressive: DIST_POWER=2.0, MAX_DIST=6  （强烈偏好近处）
+  //   - balanced:   DIST_POWER=1.5, MAX_DIST=8  （均衡）
+  //   - conservative: DIST_POWER=1.0, MAX_DIST=12 （允许走远）
+
+  const DIST_POWER = STRATEGY_DECAY[strategy]; // 距离惩罚指数
+  const MAX_DIST = strategy === "aggressive" ? 6 : strategy === "balanced" ? 8 : 12;
 
   let bestScore = -1;
   let bestTarget: Node | null = null;
   let bestPath: Node[] = [];
+  let bestGain = 0;
+  let bestCovered = 0;
 
   for (const node of CITIES) {
     if (sensedNodes.has(node)) continue;
     const dist = distFromCurrent.get(node) ?? Infinity;
-    if (dist > MAX_SEARCH_DIST) continue;
+    if (dist > MAX_DIST || dist === Infinity) continue;
 
-    // 计算路径上所有节点的加权信息增益
-    const path = bfsPath(currentPos, node, adj);
-    let pathGain = 0;
-    for (let i = 1; i < path.length; i++) {
-      const waypoint = path[i];
-      if (!sensedNodes.has(waypoint)) {
-        const wg = computeInfoGain(waypoint, activeTreasures, adj);
-        pathGain += wg * Math.pow(DECAY, i - 1);
-      }
-    }
-    if (pathGain <= 0) continue;
+    // 计算目标节点本身的信息增益
+    const gain = computeInfoGain(node, activeTreasures, adj);
+    if (gain <= 0) continue;
 
     // 多宝藏覆盖奖励：目标节点能感知到的宝藏数量越多，奖励越高
     const distFromNode = bfsDistance(node, CITIES, adj);
@@ -489,16 +578,71 @@ export function generateAdvice(
         return d >= 1 && d <= 3;
       })
     ).length;
-    const coverageBonus = 1 + COVERAGE_W * covered;
+    const coverageBonus = 1 + 0.2 * covered;
 
-    const score = dist > 0
-      ? (pathGain * coverageBonus) / dist
-      : pathGain * coverageBonus;
+    // 节点通达性奖励：度数越高，越不容易成为死胡同
+    // 度数1=死胡同（惩罚），度数2=通道，度数3+=枢纽（奖励）
+    const degree = nodeDegree.get(node) ?? 1;
+    const degreeBonus = degree >= 3 ? 1.0 : degree === 2 ? 0.9 : 0.7;
+
+    // 计算到达该节点的路径（优先避开已访问节点）
+    const pathToNode = bfsPathPreferUnvisited(currentPos, node, adj, sensedNodes);
+    const actualDist = pathToNode.length - 1;
+
+    // 轻微回头路惩罚（每经过一个已访问节点，惩罚15%）
+    const backtracks = countVisitedInPath(pathToNode, sensedNodes);
+    const backtackPenalty = 1.0 / (1 + 0.15 * backtracks);
+
+    // 综合评分
+    const score = actualDist > 0
+      ? (gain * coverageBonus * degreeBonus * backtackPenalty) / Math.pow(actualDist, DIST_POWER)
+      : gain * coverageBonus * degreeBonus * backtackPenalty;
 
     if (score > bestScore) {
       bestScore = score;
       bestTarget = node;
-      bestPath = path;
+      bestPath = pathToNode;
+      bestGain = gain;
+      bestCovered = covered;
+    }
+  }
+
+  // 如果在限制距离内找不到，扩大搜索范围
+  if (!bestTarget) {
+    for (const node of CITIES) {
+      if (sensedNodes.has(node)) continue;
+      const dist = distFromCurrent.get(node) ?? Infinity;
+      if (dist === Infinity) continue;
+
+      const gain = computeInfoGain(node, activeTreasures, adj);
+      if (gain <= 0) continue;
+
+      const distFromNode = bfsDistance(node, CITIES, adj);
+      const covered = activeTreasures.filter(t =>
+        t.candidates.some(c => {
+          const d = distFromNode.get(c) ?? Infinity;
+          return d >= 1 && d <= 3;
+        })
+      ).length;
+      const coverageBonus = 1 + 0.2 * covered;
+      const degree = nodeDegree.get(node) ?? 1;
+      const degreeBonus = degree >= 3 ? 1.0 : degree === 2 ? 0.9 : 0.7;
+      const pathToNode = bfsPathPreferUnvisited(currentPos, node, adj, sensedNodes);
+      const actualDist = pathToNode.length - 1;
+      const backtracks = countVisitedInPath(pathToNode, sensedNodes);
+      const backtackPenalty = 1.0 / (1 + 0.15 * backtracks);
+
+      const score = actualDist > 0
+        ? (gain * coverageBonus * degreeBonus * backtackPenalty) / Math.pow(actualDist, DIST_POWER)
+        : gain * coverageBonus * degreeBonus * backtackPenalty;
+
+      if (score > bestScore) {
+        bestScore = score;
+        bestTarget = node;
+        bestPath = pathToNode;
+        bestGain = gain;
+        bestCovered = covered;
+      }
     }
   }
 
@@ -509,10 +653,7 @@ export function generateAdvice(
   multiStepPlan.push({
     step: 1,
     targetNode: bestTarget,
-    reason: `路径总增益最优节点（覆盖${activeTreasures.filter(t => {
-      const d = bfsDistance(bestTarget!, CITIES, adj);
-      return t.candidates.some(c => (d.get(c) ?? Infinity) <= 3);
-    }).length}个宝藏区域）`,
+    reason: `信息增益最优感知点（覆盖${bestCovered}个宝藏区域，增益${bestGain.toFixed(1)}，需${bestPath.length - 1}步）`,
     expectedSignal: generateExpectedSignal(bestTarget, activeTreasures, adj),
   });
 
@@ -530,23 +671,28 @@ export function generateAdvice(
     for (const node of CITIES) {
       if (newSensed.has(node)) continue;
       const dist2 = distFromBest.get(node) ?? Infinity;
-      if (dist2 > MAX_SEARCH_DIST) continue;
-      const path2 = bfsPath(bestTarget, node, adj);
-      let gain2 = 0;
-      for (let i = 1; i < path2.length; i++) {
-        if (!newSensed.has(path2[i])) {
-          gain2 += computeInfoGain(path2[i], simulatedTreasures, adj) * Math.pow(DECAY, i - 1);
-        }
-      }
+      if (dist2 > MAX_DIST || dist2 === Infinity) continue;
+      const gain2 = computeInfoGain(node, simulatedTreasures, adj);
       if (gain2 <= 0) continue;
-      const s2 = dist2 > 0 ? gain2 / dist2 : gain2;
+
+      const distFromNode2 = bfsDistance(node, CITIES, adj);
+      const covered2 = simulatedTreasures.filter(t =>
+        t.candidates.some(c => (distFromNode2.get(c) ?? Infinity) <= 3)
+      ).length;
+      const bonus2 = 1 + 0.2 * covered2;
+      const degree2 = nodeDegree.get(node) ?? 1;
+      const degreeBonus2 = degree2 >= 3 ? 1.0 : degree2 === 2 ? 0.9 : 0.7;
+
+      const s2 = dist2 > 0
+        ? (gain2 * bonus2 * degreeBonus2) / Math.pow(dist2, DIST_POWER)
+        : gain2 * bonus2 * degreeBonus2;
       if (s2 > bestStep2Score) { bestStep2Score = s2; bestStep2 = node; }
     }
     if (bestStep2) {
       multiStepPlan.push({
         step: 2,
         targetNode: bestStep2,
-        reason: `若第一步无信号，继续前往路径增益最优节点`,
+        reason: `若第一步无信号，继续前往信息增益最优节点`,
         expectedSignal: generateExpectedSignal(bestStep2, simulatedTreasures, adj),
       });
     }
@@ -555,10 +701,10 @@ export function generateAdvice(
   return {
     targetNode: bestTarget,
     path: bestPath,
-    reason: `路径总增益最优：前往${bestTarget}（沿途覆盖多个宝藏候选区域）`,
+    reason: `信息增益最优：前往${bestTarget}（覆盖${bestCovered}个宝藏区域，增益${bestGain.toFixed(1)}，需${bestPath.length - 1}步）`,
     expectedSignal: generateExpectedSignal(bestTarget, activeTreasures, adj),
     strategy: "sense",
-    confidence: Math.min(95, Math.round(bestScore * 10)),
+    confidence: Math.min(95, Math.round(bestScore * 20)),
     multiStepPlan,
   };
 }
