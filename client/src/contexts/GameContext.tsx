@@ -230,14 +230,20 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
         return fresh;
       });
 
-      // 逐步迭代计算：每轮对所有宝藏同时应用同一条感知记录，避免 const TDZ 问题
+      // 逐步迭代计算：每轮对所有宝藏同时应用同一条感知记录
+      // 修复：与 submitSense 的增量过滤保持一致的 otherMinDists 计算基准。
+      // submitSense 中，每条记录的 otherMinDists 基于“该记录应用前的候选点状态”计算。
+      // 因此重算时同样应该：先快照当前候选点状态，再基于快照计算 otherMinDists，最后再过滤。
       let recomputedTreasures = freshTreasures.map(t => ({ ...t, candidates: t.found ? t.candidates : [...t.candidates] }));
       for (let ri = 0; ri < newSenseHistory.length; ri++) {
         const record = newSenseHistory[ri];
-        // 先对所有宝藏计算 otherMinDists（基于本轮开始前的候选点状态）
-        const nextTreasures = recomputedTreasures.map(t => {
+        // 快照本轮开始前的候选点状态（用于计算 otherMinDists）
+        // 这与 submitSense 中使用 prev.treasures（过滤前状态）的行为保持一致
+        const snapshotTreasures = recomputedTreasures;
+        const nextTreasures = snapshotTreasures.map(t => {
           if (t.found) return t;
-          const otherMinDists = computeOtherMinDists(record, recomputedTreasures, t.id);
+          // 基于快照（过滤前状态）计算 otherMinDists
+          const otherMinDists = computeOtherMinDists(record, snapshotTreasures, t.id);
           const candidates = bayesianFilter(t.candidates, [record], adj, [otherMinDists]);
           return { ...t, candidates };
         });

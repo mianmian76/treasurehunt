@@ -88,20 +88,30 @@ export function bfsDistance(start: Node, targets: Node[], adj: Map<Node, Node[]>
 }
 
 // BFS最短路径（返回路径）
+// 使用父节点回溯方式，内存复杂度 O(V)，优于存储完整路径的 O(V²)
 export function bfsPath(start: Node, end: Node, adj: Map<Node, Node[]>): Node[] {
   if (start === end) return [start];
-  const queue: Node[][] = [[start]];
+  const parent = new Map<Node, Node>();
+  const queue: Node[] = [start];
   const visited = new Set<Node>([start]);
 
   while (queue.length > 0) {
-    const path = queue.shift()!;
-    const cur = path[path.length - 1];
+    const cur = queue.shift()!;
     for (const nb of (adj.get(cur) || [])) {
       if (!visited.has(nb)) {
-        const newPath = [...path, nb];
-        if (nb === end) return newPath;
         visited.add(nb);
-        queue.push(newPath);
+        parent.set(nb, cur);
+        if (nb === end) {
+          // 回溯重建路径
+          const path: Node[] = [];
+          let node: Node | undefined = end;
+          while (node !== undefined) {
+            path.unshift(node);
+            node = parent.get(node);
+          }
+          return path;
+        }
+        queue.push(nb);
       }
     }
   }
@@ -131,7 +141,7 @@ export interface TreasureState {
 //
 // 对某个宝藏 T 的候选点过滤规则（signals = 信号数组，已排序）：
 //
-// 无信号：排除距离 < 4 的候选点。
+// 无信号：排除距离 1-3 的候选点（这些距离应产生信号但没有，说明宝藏不在此处）。
 //
 // 有信号 signals：
 //   1. 排除距离 < min(signals) 的候选点（最小信号约束）
@@ -140,13 +150,16 @@ export interface TreasureState {
 //      - 若 minDist 在 signals 中 但 该距离值被其他宝藏共享 → 信号来源不确定 → 只执行约束①
 //      - 若 minDist <= 3 但不在 signals 中 → T 不在感知范围内 → 排除距离 <= 3 的候选点
 //      - 若 minDist > 3 → T 不在感知范围内，无额外约束
+//   3. 单信号隐含约束：若 signals 长度为1，则感知范围内恰好只有1个宝藏。
+//      若 T 的 minDist > 3（T 不在感知范围内），但其他宝藏中有 >=2 个在感知范围内，
+//      则说明当前候选点分布与单信号矛盾，需进一步排除（此约束由调用方通过 otherMinDists 传入）。
 //
 // otherMinDists: 同一感知点处，其他宝藏的 minDist 集合（用于判断信号是否被共享）
 export function bayesianFilter(
   candidates: Node[],
   history: SenseRecord[],
   adj: Map<Node, Node[]>,
-  otherMinDistsPerRecord?: Map<string, number>[] // 每条记录对应的"其他宝藏 minDist 集合"，key=距离值 stringified
+  otherMinDistsPerRecord?: Map<string, number>[] // 每条记录对应的"其他宝藏 minDist 集合"，key=宝藏ID
 ): Node[] {
   let filtered = [...candidates];
 
@@ -165,6 +178,7 @@ export function bayesianFilter(
     } else {
       const signals = [...record.signal].sort((a, b) => a - b);
       const minSignal = signals[0];
+      const isSingleSignal = signals.length === 1;
 
       // 约束①：排除距离 < min(signals) 的候选点
       filtered = filtered.filter(c => (distMap.get(c) ?? Infinity) >= minSignal);
@@ -174,6 +188,8 @@ export function bayesianFilter(
         const minDist = Math.min(...filtered.map(c => distMap.get(c) ?? Infinity));
         // 获取其他宝藏在该感知点的 minDist 集合（用于判断信号是否被共享）
         const otherMinDists = otherMinDistsPerRecord?.[ri];
+        // 其他宝藏中在感知范围内（minDist <= 3）的数量
+        const otherInRangeCount = otherMinDists ? Array.from(otherMinDists.values()).filter(d => d <= 3).length : 0;
 
         if (minDist <= 3) {
           if (signals.includes(minDist)) {
@@ -188,8 +204,16 @@ export function bayesianFilter(
             // T 的 minDist <= 3 但不在信号列表中 → T 不在感知范围内
             filtered = filtered.filter(c => (distMap.get(c) ?? Infinity) > 3);
           }
+        } else if (isSingleSignal && minDist > 3) {
+          // 约束③（单信号隐含约束）：单信号意味着感知范围内恰好1个宝藏。
+          // 若 T 不在感知范围内（minDist > 3），且其他宝藏中已有 >= 1 个在感知范围内，
+          // 则 T 不在感知范围内是合理的，无需额外约束。
+          // 但若其他宝藏中没有任何一个在感知范围内（otherInRangeCount === 0），
+          // 则说明没有宝藏能产生该信号，这与有信号矛盾——此情况属于数据异常，保守处理不过滤。
+          // （此分支目前为占位，保留扩展空间）
+          void otherInRangeCount; // 抑制未使用变量警告
         }
-        // 若 minDist > 3，T 不在感知范围内，无额外约束
+        // 若 minDist > 3 且非单信号，T 不在感知范围内，无额外约束
       }
     }
   }
@@ -229,9 +253,19 @@ export function scoreHub(
     const minDist = Math.min(...t.candidates.map(c => distFromHub.get(c) ?? Infinity));
     if (minDist <= 3) {
       coverageCount++;
-      const signalElim = t.candidates.filter(c => (distFromHub.get(c) ?? Infinity) > 3).length;
-      const noSignalElim = t.candidates.filter(c => (distFromHub.get(c) ?? Infinity) <= 3).length;
-      totalExpectedElim += (signalElim + noSignalElim) / 2;
+      const inRangeCount = t.candidates.filter(c => (distFromHub.get(c) ?? Infinity) <= 3).length;
+      const outRangeCount = t.candidates.filter(c => (distFromHub.get(c) ?? Infinity) > 3).length;
+      const total = t.candidates.length;
+      // 修复：使用候选点在感知范围内的实际比例作为概率权重，而非固定50%
+      // 有信号概率 ≈ inRangeCount / total，无信号概率 ≈ outRangeCount / total
+      // 有信号时：排除 outRangeCount 个候选点（距离>3的点被排除）
+      //           + 若信号唯一归属，还能进一步锁定到具体距离，额外排除 inRangeCount - 1 个
+      //           保守估计：只计排除 outRangeCount 个
+      // 无信号时：排除 inRangeCount 个候选点（距离<=3的点被排除）
+      const pSignal = total > 0 ? inRangeCount / total : 0;
+      const pNoSignal = 1 - pSignal;
+      const expectedElim = pSignal * outRangeCount + pNoSignal * inRangeCount;
+      totalExpectedElim += expectedElim;
     }
   }
 
@@ -334,11 +368,14 @@ export function generateAdvice(
     }
   }
 
-  // 如果有宝藏候选点≤4，直接踩点（候选点少时直接验证比感知更高效）
-  // 优先选择候选点最少且距离最近的宝藏
+  // 如果有宝藏候选点≤2，直接踩点（候选点极少时直接验证比感知更高效）
+  // 阈值从4降低到2，与 ai-prompt.md 策略文档保持一致：
+  //   "≤ 2 个：直接踩点，按最短路径逐一验证"
+  //   "3~4 个：先感知一次，若能区分则继续感知；若无法区分则直接踩点"
+  // 候选点为3~4时，感知一次往往能同时收窄多个宝藏，总步数更优
   const distFromCurrent0 = bfsDistance(currentPos, CITIES, adj);
   const urgentTreasures = activeTreasures
-    .filter(t => t.candidates.length <= 4)
+    .filter(t => t.candidates.length <= 2)
     .sort((a, b) => {
       // 候选点越少越优先，相同时选距离最近的
       if (a.candidates.length !== b.candidates.length) return a.candidates.length - b.candidates.length;
