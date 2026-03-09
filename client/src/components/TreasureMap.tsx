@@ -273,7 +273,7 @@ const NodeCircle = React.memo(({
       {hovered && (
         <foreignObject
           x={cx - 90}
-          y={cy - r - (hasDistInfo || hasSenseInfo ? 74 : 46)}
+          y={cy - r - (hasDistInfo || hasSenseInfo ? 104 : 76)}
           width={180}
           height={hasDistInfo || hasSenseInfo ? 68 : 36}
           style={{ pointerEvents: "none", overflow: "visible" }}
