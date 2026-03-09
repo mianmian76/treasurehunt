@@ -3,10 +3,10 @@
 // 设计哲学：深海探险 × 精确数据推理
 // ============================================================
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useGame } from "@/contexts/GameContext";
-import { CITIES, TREASURE_COLORS, STRATEGY_LABELS, STRATEGY_DESCS, ExploreStrategy } from "@/lib/gameEngine";
+import { CITIES, TREASURE_COLORS, STRATEGY_LABELS, STRATEGY_DESCS, ExploreStrategy, TREASURE_ZONES } from "@/lib/gameEngine";
 import { toast } from "sonner";
 
 const SIGNAL_BUTTONS = [
@@ -24,10 +24,18 @@ function getSignalColor(d: number): string {
   return "text-slate-400";
 }
 
+function getSignalBadgeStyle(d: number | null): React.CSSProperties {
+  if (d === null) return { background: "rgba(30,41,59,0.6)", border: "1px solid rgba(71,85,105,0.5)", color: "rgb(100,116,139)" };
+  if (d === 1) return { background: "rgba(127,29,29,0.7)", border: "1px solid rgba(239,68,68,0.7)", color: "rgb(252,165,165)" };
+  if (d === 2) return { background: "rgba(120,53,15,0.7)", border: "1px solid rgba(245,158,11,0.7)", color: "rgb(253,230,138)" };
+  if (d === 3) return { background: "rgba(6,78,59,0.7)", border: "1px solid rgba(16,185,129,0.7)", color: "rgb(167,243,208)" };
+  return { background: "rgba(30,41,59,0.6)", border: "1px solid rgba(71,85,105,0.5)", color: "rgb(100,116,139)" };
+}
+
 export default function DecisionPanel() {
   const { state, submitSense, markTreasureFound, deleteRecord, setStrategy } = useGame();
   const [confirmDeleteIndex, setConfirmDeleteIndex] = useState<number | null>(null);
-  const { currentPos, treasures, currentAdvice, moveHistory, stepCount, strategy } = state;
+  const { currentPos, treasures, currentAdvice, moveHistory, stepCount, strategy, senseHistory } = state;
 
   const [inputPos, setInputPos] = useState(currentPos);
   // selectedSignals: [] = 无信号选中；[0] = 无信号；[1]/[2]/[3] = 单信号；[1,2]等 = 双信号
@@ -35,6 +43,8 @@ export default function DecisionPanel() {
   const [selectedSignals, setSelectedSignals] = useState<Set<number>>(new Set());
   const [foundTreasure, setFoundTreasure] = useState<string>("none");
   const [activeTab, setActiveTab] = useState<"input" | "analysis" | "history">("input");
+  // 历史记录子视图：move=移动历史，signal=信号历史
+  const [historyView, setHistoryView] = useState<"move" | "signal">("move");
 
   // 切换信号选择：无信号(0)与有信号互斥；有信号最多选2个
   const toggleSignal = (val: number) => {
@@ -116,6 +126,57 @@ export default function DecisionPanel() {
     setFoundTreasure("none"); // 重置为未找到
     setSelectedSignals(new Set());
   };
+
+  // ── 信号历史：按宝藏分组，只显示未找到宝藏的相关记录 ──
+  // 对每条 senseHistory 记录，判断该信号可能归属于哪些未找到的宝藏
+  const signalHistoryByTreasure = useMemo(() => {
+    // 只处理未找到的宝藏
+    const activeTids = treasures.filter(t => !t.found).map(t => t.id);
+    if (activeTids.length === 0) return {};
+
+    // 对每条感知记录，找出哪些宝藏区域与该信号相关
+    // 判断依据：该宝藏的初始候选点中，是否有节点与感知位置的距离匹配信号值
+    const result: Record<string, Array<{ step: number; pos: string; signal: number[] | null; moveAction: string }>> = {};
+
+    for (const tid of activeTids) {
+      result[tid] = [];
+    }
+
+    moveHistory.forEach((record, idx) => {
+      if (record.step === 0) return; // 跳过起点
+      if (record.treasureFound) return; // 找到宝藏的记录不显示
+
+      // 找到对应的 senseHistory 记录
+      const senseRecord = senseHistory.find(
+        s => s.position === record.position && JSON.stringify(s.signal) === JSON.stringify(record.signal)
+      );
+      if (!senseRecord) return;
+
+      // 对每个未找到的宝藏，判断该记录是否与其相关
+      for (const tid of activeTids) {
+        const treasure = treasures.find(t => t.id === tid);
+        if (!treasure) continue;
+
+        // 判断该感知记录是否与该宝藏相关：
+        // 1. 有信号时：该宝藏的候选点中是否有节点距离感知位置 ≤ 3
+        // 2. 无信号时：也显示（无信号也是有效的排除信息）
+        // 使用初始候选点（TREASURE_ZONES）来判断，避免因候选点已被过滤而漏显
+        const initialCandidates = (TREASURE_ZONES as Record<string, string[]>)[tid] || [];
+        const isRelevant = true; // 所有记录都对所有宝藏有参考价值，全部显示
+
+        if (isRelevant) {
+          result[tid].push({
+            step: record.step,
+            pos: record.position,
+            signal: record.signal,
+            moveAction: record.action,
+          });
+        }
+      }
+    });
+
+    return result;
+  }, [moveHistory, senseHistory, treasures]);
 
   return (
     <div className="flex flex-col h-full gap-3">
@@ -257,7 +318,7 @@ export default function DecisionPanel() {
                   onClick={() => setFoundTreasure("found")}
                   className={`py-1.5 rounded border text-[0.6rem] font-mono transition-all ${
                     foundTreasure === "found"
-                      ? "border-amber-400 text-amber-300 bg-amber-900/30"
+                      ? "border-amber-400 text-amber-300 bg-amber-900/20"
                       : "border-slate-600/40 text-slate-500 hover:border-slate-500/60"
                   }`}
                 >
@@ -425,72 +486,205 @@ export default function DecisionPanel() {
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -10 }}
-            className="panel-card p-3 overflow-y-auto max-h-96"
+            className="flex flex-col gap-2"
           >
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-[0.65rem] font-mono text-slate-400 uppercase tracking-wider">移动历史</span>
-              <span className="text-[0.55rem] text-slate-500">点击 × 删除错误记录</span>
+            {/* 子视图切换 */}
+            <div className="flex gap-1 panel-card p-1">
+              <button
+                onClick={() => setHistoryView("move")}
+                className={`flex-1 py-1 rounded text-[0.6rem] font-mono transition-all ${
+                  historyView === "move"
+                    ? "bg-slate-700/60 text-slate-200 border border-slate-500/50"
+                    : "text-slate-500 hover:text-slate-400"
+                }`}
+              >
+                🗺 移动历史
+              </button>
+              <button
+                onClick={() => setHistoryView("signal")}
+                className={`flex-1 py-1 rounded text-[0.6rem] font-mono transition-all ${
+                  historyView === "signal"
+                    ? "bg-slate-700/60 text-slate-200 border border-slate-500/50"
+                    : "text-slate-500 hover:text-slate-400"
+                }`}
+              >
+                📡 信号历史
+              </button>
             </div>
-            <div className="space-y-1.5">
-              {[...moveHistory].map((record, originalIndex) => (
-                <div
-                  key={originalIndex}
-                  className={`flex items-start gap-2 p-1.5 rounded text-[0.6rem] transition-all ${
-                    confirmDeleteIndex === originalIndex
-                      ? "bg-red-900/30 border border-red-500/50"
-                      : record.treasureFound
-                      ? "bg-amber-900/20 border border-amber-600/30"
-                      : "bg-slate-900/30 border border-transparent"
-                  }`}
-                >
-                  <span className="font-mono text-slate-500 shrink-0 w-5 text-right">{record.step}</span>
-                  <span className={`flex-1 ${
-                    confirmDeleteIndex === originalIndex ? "text-red-300" :
-                    record.treasureFound ? "text-amber-300" : "text-slate-300"
-                  }`}>
-                    {record.action}
-                  </span>
-                  {record.signal !== null && !(record.signal.length === 1 && record.signal[0] === 0) && !record.treasureFound && confirmDeleteIndex !== originalIndex && (
-                    <span className="shrink-0 font-mono font-bold flex gap-0.5">
-                      {record.signal.map((d, i) => (
-                        <span key={i} className={getSignalColor(d)}>d={d}</span>
-                      ))}
-                    </span>
-                  )}
-                  {/* 删除按钮区域（起点 step=0 不可删除） */}
-                  {record.step !== 0 && (
-                    confirmDeleteIndex === originalIndex ? (
-                      <div className="flex gap-1 shrink-0">
-                        <button
-                          onClick={() => {
-                            deleteRecord(originalIndex);
-                            setConfirmDeleteIndex(null);
-                            toast.success(`已删除步骤 ${record.step} 的记录，候选点已重新计算`);
-                          }}
-                          className="px-1.5 py-0.5 rounded bg-red-600/80 hover:bg-red-500 text-white text-[0.55rem] font-mono transition-all"
-                        >
-                          确认
-                        </button>
-                        <button
-                          onClick={() => setConfirmDeleteIndex(null)}
-                          className="px-1.5 py-0.5 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 text-[0.55rem] font-mono transition-all"
-                        >
-                          取消
-                        </button>
-                      </div>
-                    ) : (
-                      <button
-                        onClick={() => setConfirmDeleteIndex(originalIndex)}
-                        className="shrink-0 w-4 h-4 flex items-center justify-center rounded hover:bg-red-900/50 text-slate-600 hover:text-red-400 transition-all text-[0.7rem] leading-none"
-                        title="删除此记录"
-                      >
-                        ×
-                      </button>
-                    )
-                  )}
+
+            {/* 移动历史 */}
+            {historyView === "move" && (
+              <div className="panel-card p-3 overflow-y-auto max-h-96">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-[0.65rem] font-mono text-slate-400 uppercase tracking-wider">移动历史</span>
+                  <span className="text-[0.55rem] text-slate-500">点击 × 删除错误记录</span>
                 </div>
-              ))}
-            </div>
+                <div className="space-y-1.5">
+                  {[...moveHistory].map((record, originalIndex) => (
+                    <div
+                      key={originalIndex}
+                      className={`flex items-start gap-2 p-1.5 rounded text-[0.6rem] transition-all ${
+                        confirmDeleteIndex === originalIndex
+                          ? "bg-red-900/30 border border-red-500/50"
+                          : record.treasureFound
+                          ? "bg-amber-900/20 border border-amber-600/30"
+                          : "bg-slate-900/30 border border-transparent"
+                      }`}
+                    >
+                      <span className="font-mono text-slate-500 shrink-0 w-5 text-right">{record.step}</span>
+                      <span className={`flex-1 ${
+                        confirmDeleteIndex === originalIndex ? "text-red-300" :
+                        record.treasureFound ? "text-amber-300" : "text-slate-300"
+                      }`}>
+                        {record.action}
+                      </span>
+                      {record.signal !== null && !(record.signal.length === 1 && record.signal[0] === 0) && !record.treasureFound && confirmDeleteIndex !== originalIndex && (
+                        <span className="shrink-0 font-mono font-bold flex gap-0.5">
+                          {record.signal.map((d, i) => (
+                            <span key={i} className={getSignalColor(d)}>d={d}</span>
+                          ))}
+                        </span>
+                      )}
+                      {/* 删除按钮区域（起点 step=0 不可删除） */}
+                      {record.step !== 0 && (
+                        confirmDeleteIndex === originalIndex ? (
+                          <div className="flex gap-1 shrink-0">
+                            <button
+                              onClick={() => {
+                                deleteRecord(originalIndex);
+                                setConfirmDeleteIndex(null);
+                                toast.success(`已删除步骤 ${record.step} 的记录，候选点已重新计算`);
+                              }}
+                              className="px-1.5 py-0.5 rounded bg-red-600/80 hover:bg-red-500 text-white text-[0.55rem] font-mono transition-all"
+                            >
+                              确认
+                            </button>
+                            <button
+                              onClick={() => setConfirmDeleteIndex(null)}
+                              className="px-1.5 py-0.5 rounded bg-slate-700 hover:bg-slate-600 text-slate-300 text-[0.55rem] font-mono transition-all"
+                            >
+                              取消
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            onClick={() => setConfirmDeleteIndex(originalIndex)}
+                            className="shrink-0 w-4 h-4 flex items-center justify-center rounded hover:bg-red-900/50 text-slate-600 hover:text-red-400 transition-all text-[0.7rem] leading-none"
+                            title="删除此记录"
+                          >
+                            ×
+                          </button>
+                        )
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* 信号历史（按宝藏分组，已找到的不显示） */}
+            {historyView === "signal" && (
+              <div className="overflow-y-auto max-h-96 space-y-2">
+                {activeTreasures.length === 0 ? (
+                  <div className="panel-card p-4 text-center text-[0.65rem] text-amber-400">
+                    🎉 所有宝藏均已找到！
+                  </div>
+                ) : (
+                  activeTreasures.map(treasure => {
+                    const records = signalHistoryByTreasure[treasure.id] || [];
+                    return (
+                      <div key={treasure.id} className="panel-card p-3">
+                        {/* 宝藏标题 */}
+                        <div className="flex items-center gap-2 mb-2">
+                          <div
+                            className="w-2 h-2 rounded-full"
+                            style={{ background: TREASURE_COLORS[treasure.id] }}
+                          />
+                          <span
+                            className="text-[0.65rem] font-mono font-bold"
+                            style={{ color: TREASURE_COLORS[treasure.id] }}
+                          >
+                            {treasure.id}
+                          </span>
+                          <span className="text-[0.55rem] text-slate-500">
+                            {treasure.candidates.length} 个候选点
+                          </span>
+                          <span className="ml-auto text-[0.55rem] text-slate-600 font-mono">
+                            {records.length} 条记录
+                          </span>
+                        </div>
+
+                        {/* 感知记录列表 */}
+                        {records.length === 0 ? (
+                          <div className="text-[0.6rem] text-slate-600 italic pl-1">暂无感知记录</div>
+                        ) : (
+                          <div className="space-y-1">
+                            {records.map((rec, i) => (
+                              <div
+                                key={i}
+                                className="flex items-center gap-2 px-2 py-1 rounded bg-slate-900/50 border border-slate-700/30"
+                              >
+                                {/* 步数 */}
+                                <span className="text-[0.55rem] font-mono text-slate-600 shrink-0 w-4 text-right">
+                                  {rec.step}
+                                </span>
+                                {/* 位置 */}
+                                <span className="text-[0.6rem] font-mono text-slate-300 shrink-0 w-6">
+                                  {rec.pos}
+                                </span>
+                                {/* 信号徽章 */}
+                                <div className="flex gap-1 shrink-0">
+                                  {rec.signal === null || rec.signal.length === 0 ? (
+                                    <span
+                                      className="text-[0.55rem] font-mono px-1.5 py-0.5 rounded"
+                                      style={getSignalBadgeStyle(null)}
+                                    >
+                                      无信号
+                                    </span>
+                                  ) : (
+                                    rec.signal.map((d, si) => (
+                                      <span
+                                        key={si}
+                                        className="text-[0.6rem] font-mono font-bold px-1.5 py-0.5 rounded"
+                                        style={getSignalBadgeStyle(d)}
+                                      >
+                                        d={d}
+                                      </span>
+                                    ))
+                                  )}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })
+                )}
+
+                {/* 已找到宝藏的提示 */}
+                {foundTreasures.length > 0 && (
+                  <div className="panel-card p-2">
+                    <div className="text-[0.55rem] text-slate-600 font-mono mb-1">已找到（历史已隐藏）</div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {foundTreasures.map(t => (
+                        <span
+                          key={t.id}
+                          className="text-[0.55rem] font-mono px-1.5 py-0.5 rounded"
+                          style={{
+                            background: "rgba(52,211,153,0.1)",
+                            border: "1px solid rgba(52,211,153,0.3)",
+                            color: "rgb(110,231,183)",
+                          }}
+                        >
+                          {t.id} ✓ {t.foundAt}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
           </motion.div>
         )}
       </AnimatePresence>

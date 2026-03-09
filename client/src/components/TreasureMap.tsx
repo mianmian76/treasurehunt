@@ -1,5 +1,5 @@
 // ============================================================
-// 寻箱决策平台 — 交互式地图组件 v4
+// 寻箱决策平台 — 交互式地图组件 v5
 // 设计哲学：深海探险 × 精确数据推理
 // 布局：
 //   - 节点：小圆点（直径固定），用 position:absolute 精确定位
@@ -16,7 +16,7 @@
 //   - 已排除：暗灰色半透明
 // ============================================================
 
-import React, { useMemo, useState, useCallback, useRef, useEffect } from "react";
+import React, { useMemo, useState, useCallback } from "react";
 import { useGame, NodeStatus } from "@/contexts/GameContext";
 import { nodeFromCoords, isValidNode, ROADS, bfsDistance, buildAdjacency, CITIES } from "@/lib/gameEngine";
 import { motion } from "framer-motion";
@@ -119,7 +119,7 @@ function getHoverColors(status: NodeStatus): { fill: string; stroke: string; glo
   return { fill: "rgba(51,65,85,0.8)", stroke: "rgba(100,116,139,0.9)" };
 }
 
-function getNodeTooltip(node: string, status: NodeStatus, treasures: any[]): string {
+function getNodeTooltip(node: string, status: NodeStatus, treasures: any[], distToNode: number | undefined): string {
   const baseLabels: Partial<Record<NodeStatus, string>> = {
     active: "可通行节点",
     player: "当前位置",
@@ -139,6 +139,10 @@ function getNodeTooltip(node: string, status: NodeStatus, treasures: any[]): str
     .map(t => `${t.id}(${t.candidates.length}个候选)`);
   let tip = `${node} — ${baseLabels[status] || status}`;
   if (candidateTreasures.length > 0) tip += ` | ${candidateTreasures.join(", ")}`;
+  // 追加距离信息
+  if (status !== "player" && distToNode !== undefined && distToNode !== Infinity) {
+    tip += ` | 距当前位置 ${distToNode} 步`;
+  }
   return tip;
 }
 
@@ -151,12 +155,13 @@ interface NodeCircleProps {
   pathIndex: number;
   treasureLabel: string;
   tooltip: string;
+  distToNode: number | undefined;
   onNodeClick: (node: string) => void;
   isClickable: boolean;
 }
 
 const NodeCircle = React.memo(({
-  node, cx, cy, status, pathIndex, treasureLabel, tooltip, onNodeClick, isClickable
+  node, cx, cy, status, pathIndex, treasureLabel, tooltip, distToNode, onNodeClick, isClickable
 }: NodeCircleProps) => {
   const [hovered, setHovered] = useState(false);
   const isPlayer = status === "player";
@@ -174,6 +179,15 @@ const NodeCircle = React.memo(({
 
   const r = isPlayer ? NODE_R + 2 : isTreasure ? NODE_R + 1 : NODE_R;
   const strokeW = isPlayer ? 2.5 : isTreasure ? 2 : hovered ? 2 : 1.5;
+
+  // 距离徽章颜色
+  const distBadgeColor = distToNode === 1
+    ? { bg: "rgba(127,29,29,0.95)", border: "rgba(239,68,68,0.9)", text: "rgb(252,165,165)" }
+    : distToNode === 2
+    ? { bg: "rgba(120,53,15,0.95)", border: "rgba(245,158,11,0.9)", text: "rgb(253,230,138)" }
+    : distToNode === 3
+    ? { bg: "rgba(6,78,59,0.95)", border: "rgba(16,185,129,0.9)", text: "rgb(167,243,208)" }
+    : { bg: "rgba(15,23,42,0.95)", border: "rgba(100,116,139,0.6)", text: "rgb(226,232,240)" };
 
   return (
     <g
@@ -260,21 +274,21 @@ const NodeCircle = React.memo(({
         </text>
       )}
 
-      {/* 悬停 Tooltip */}
-      {hovered && tooltip && (
+      {/* 悬停 Tooltip + 距离徽章 */}
+      {hovered && (
         <foreignObject
-          x={cx - 80}
-          y={cy - r - 36}
-          width={160}
-          height={30}
+          x={cx - 90}
+          y={cy - r - 52}
+          width={180}
+          height={46}
           style={{ pointerEvents: "none", overflow: "visible" }}
         >
           <div
             style={{
               background: "rgba(15,23,42,0.97)",
               border: "1px solid rgba(100,116,139,0.5)",
-              borderRadius: "4px",
-              padding: "3px 6px",
+              borderRadius: "5px",
+              padding: "4px 7px",
               fontSize: "0.55rem",
               fontFamily: "monospace",
               color: "rgb(226,232,240)",
@@ -283,7 +297,29 @@ const NodeCircle = React.memo(({
               textAlign: "center",
             }}
           >
-            {tooltip}
+            {/* 节点名 + 状态 */}
+            <div style={{ marginBottom: "3px", color: "rgb(226,232,240)" }}>
+              {tooltip.split(" | ").slice(0, -1).join(" | ") || tooltip}
+            </div>
+            {/* 距离徽章 */}
+            {!isPlayer && distToNode !== undefined && distToNode !== Infinity && (
+              <div style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "3px",
+                background: distBadgeColor.bg,
+                border: `1px solid ${distBadgeColor.border}`,
+                borderRadius: "3px",
+                padding: "1px 5px",
+                color: distBadgeColor.text,
+                fontWeight: "bold",
+                fontSize: "0.6rem",
+              }}>
+                <span style={{ opacity: 0.8 }}>距当前位置</span>
+                <span style={{ fontSize: "0.75rem" }}>{distToNode}</span>
+                <span style={{ opacity: 0.8 }}>步</span>
+              </div>
+            )}
           </div>
         </foreignObject>
       )}
@@ -294,7 +330,7 @@ const NodeCircle = React.memo(({
 NodeCircle.displayName = "NodeCircle";
 
 export default function TreasureMap() {
-  const { state, getNodeStatus } = useGame();
+  const { state, getNodeStatus, getDistanceMap } = useGame();
   const { currentAdvice, treasures, gameStarted, senseHistory } = state;
 
   // 计算已感知过的节点集合（曾经站过的位置）
@@ -308,6 +344,9 @@ export default function TreasureMap() {
     }
     return map;
   }, [currentAdvice]);
+
+  // 从当前位置出发的 BFS 距离表
+  const distanceMap = useMemo(() => getDistanceMap(), [getDistanceMap]);
 
   // 点击节点：自动填入位置输入框
   const handleNodeClick = useCallback((node: string) => {
@@ -425,7 +464,8 @@ export default function TreasureMap() {
           const status = getNodeStatus(node);
           const pathIndex = pathMap.get(node) ?? -1;
           const treasureLabel = treasures.find(t => t.found && t.foundAt === node)?.id ?? "";
-          const tooltip = getNodeTooltip(node, status, treasures);
+          const distToNode = distanceMap.get(node);
+          const tooltip = getNodeTooltip(node, status, treasures, distToNode);
 
           return (
             <g key={node}>
@@ -437,6 +477,7 @@ export default function TreasureMap() {
                 pathIndex={pathIndex}
                 treasureLabel={treasureLabel}
                 tooltip={tooltip}
+                distToNode={distToNode}
                 onNodeClick={handleNodeClick}
                 isClickable={gameStarted}
               />
@@ -504,7 +545,7 @@ export default function TreasureMap() {
 
       {gameStarted && (
         <div className="mt-1.5" style={{ fontSize: "0.55rem", color: "rgb(71,85,105)", fontFamily: "monospace" }}>
-          💡 点击节点可快速填入当前位置
+          💡 点击节点可快速填入当前位置 · 悬停节点可查看与当前位置的最短距离
         </div>
       )}
     </div>
