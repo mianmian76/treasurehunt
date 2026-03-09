@@ -101,6 +101,25 @@ function getHoverColors(status: NodeStatus): { fill: string; stroke: string; glo
   return { fill: "rgba(51,65,85,0.8)", stroke: "rgba(100,116,139,0.9)" };
 }
 
+// 选中节点高亮圈（持续停留，跟随点击移动）
+interface SelectedRingProps {
+  cx: number;
+  cy: number;
+  r: number;
+}
+function SelectedRing({ cx, cy, r }: SelectedRingProps) {
+  return (
+    <circle
+      cx={cx} cy={cy} r={r + 6}
+      fill="none"
+      stroke="rgba(255,255,255,0.9)"
+      strokeWidth={2}
+      strokeDasharray="4 2"
+      style={{ pointerEvents: "none" }}
+    />
+  );
+}
+
 // 单个节点组件
 interface NodeCircleProps {
   node: string;
@@ -125,9 +144,7 @@ const NodeCircle = React.memo(({
   onNodeClick, isClickable
 }: NodeCircleProps) => {
   const [hovered, setHovered] = useState(false);
-  // 点击波纹动画：clicked=true 时显示扩散圆，动画结束后重置
-  const [clicked, setClicked] = useState(false);
-  const clickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // 不再需要本地点击状态，选中效果由父组件统一管理
 
   const isPlayer = status === "player";
   const isTreasure = status === "treasure";
@@ -159,17 +176,9 @@ const NodeCircle = React.memo(({
               { bg: "rgba(6,78,59,0.9)", border: "rgba(16,185,129,0.8)", text: "rgb(167,243,208)" };
 
   const handleClick = () => {
-    if (!isClickable || isPlayer) return;
+    if (!isClickable) return;
     onNodeClick(node);
-    // 触发波纹动画
-    setClicked(true);
-    if (clickTimerRef.current) clearTimeout(clickTimerRef.current);
-    clickTimerRef.current = setTimeout(() => setClicked(false), 500);
   };
-
-  useEffect(() => {
-    return () => { if (clickTimerRef.current) clearTimeout(clickTimerRef.current); };
-  }, []);
 
   // tooltip 内容：基础信息 + 最短距离 + 已感知信号
   const hasDistInfo = !isPlayer && distToPlayer !== undefined && distToPlayer !== Infinity;
@@ -177,25 +186,11 @@ const NodeCircle = React.memo(({
 
   return (
     <g
-      style={{ cursor: isClickable && !isPlayer ? "pointer" : "default" }}
+      style={{ cursor: isClickable ? "pointer" : "default" }}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
       onClick={handleClick}
     >
-      {/* 点击波纹动画 */}
-      {clicked && (
-        <circle
-          cx={cx} cy={cy} r={r}
-          fill="none"
-          stroke="rgba(255,255,255,0.85)"
-          strokeWidth={2}
-          style={{
-            pointerEvents: "none",
-            animation: "ripple-expand 0.5s ease-out forwards",
-          }}
-        />
-      )}
-
       {/* 发光效果 */}
       {glow && (isPlayer || isTreasure || isCandidate || isPath || hovered) && (
         <circle
@@ -278,9 +273,9 @@ const NodeCircle = React.memo(({
       {hovered && (
         <foreignObject
           x={cx - 90}
-          y={cy - r - (hasDistInfo || hasSenseInfo ? 62 : 36)}
+          y={cy - r - (hasDistInfo || hasSenseInfo ? 74 : 46)}
           width={180}
-          height={hasDistInfo || hasSenseInfo ? 58 : 30}
+          height={hasDistInfo || hasSenseInfo ? 68 : 36}
           style={{ pointerEvents: "none", overflow: "visible" }}
         >
           <div
@@ -354,6 +349,9 @@ export default function TreasureMap() {
   const { state, getNodeStatus, getDistanceMap } = useGame();
   const { currentAdvice, treasures, gameStarted, senseHistory } = state;
 
+  // 当前选中节点（点击后持续高亮，再次点击同一节点取消）
+  const [selectedNode, setSelectedNode] = useState<string | null>(null);
+
   // 已感知过的节点集合
   const sensedNodes = useMemo(() => new Set(senseHistory.map(r => r.position)), [senseHistory]);
 
@@ -394,8 +392,9 @@ export default function TreasureMap() {
     return map;
   }, [senseHistory, treasures]);
 
-  // 点击节点：自动填入位置输入框
+  // 点击节点：自动填入位置输入框，并更新选中高亮
   const handleNodeClick = useCallback((node: string) => {
+    setSelectedNode(prev => prev === node ? null : node);
     window.dispatchEvent(new CustomEvent("map-node-click", { detail: { node } }));
     toast.info(`已选择节点 ${node}`, { duration: 1200 });
   }, []);
@@ -434,14 +433,6 @@ export default function TreasureMap() {
 
   return (
     <div className="w-full select-none" style={{ overflowX: "auto" }}>
-      {/* 波纹动画 CSS */}
-      <style>{`
-        @keyframes ripple-expand {
-          0%   { r: ${NODE_R}; opacity: 0.9; }
-          100% { r: ${NODE_R + 18}; opacity: 0; }
-        }
-      `}</style>
-
       <svg
         width={svgWidth}
         height={svgHeight}
@@ -525,9 +516,14 @@ export default function TreasureMap() {
 
           // 该节点的已感知信号（undefined=未感知，null=无信号，数组=有信号值）
           const sensedSignals = senseSignalMap.has(node) ? senseSignalMap.get(node)! : undefined;
+          const isSelected = selectedNode === node;
 
           return (
             <g key={node}>
+              {/* 选中高亮圈 */}
+              {isSelected && (
+                <SelectedRing cx={cx} cy={cy} r={status === "player" ? NODE_R + 2 : status === "treasure" ? NODE_R + 1 : NODE_R} />
+              )}
               <NodeCircle
                 node={node}
                 cx={cx}
