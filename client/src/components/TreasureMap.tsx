@@ -1,19 +1,9 @@
 // ============================================================
-// 寻箱决策平台 — 交互式地图组件 v4
-// 设计哲学：深海探险 × 精确数据推理
-// 布局：
-//   - 节点：小圆点（直径固定），用 position:absolute 精确定位
-//   - 连线：SVG 叠加层，根据节点坐标绘制连接线
-//   - 路径：路径上的连线高亮为蓝色
-// 颜色系统：
-//   - T1候选点：玫瑰红/粉红色系
-//   - T2候选点：青绿/湖蓝色系
-//   - T3候选点：紫色/薰衣草色系
-//   - T4候选点：橙黄/琥珀色系
-//   - 建议路径：亮蓝色系
-//   - 玩家位置：金黄色
-//   - 已找到宝藏：亮绿色
-//   - 已排除：暗灰色半透明
+// 寻箱决策平台 — 交互式地图组件 v5
+// 新增功能：
+//   1. 悬停节点显示与当前位置的最短距离
+//   2. 点击节点有扩散圆圈视觉反馈
+//   3. 悬停标签中显示该节点已输入的距离信号（已找到宝藏的不显示）
 // ============================================================
 
 import React, { useMemo, useState, useCallback, useRef, useEffect } from "react";
@@ -26,20 +16,18 @@ const ROW_LABELS = ["A","B","C","D","E","F","G","H","I","J","K","L"];
 const COL_LABELS = ["1","2","3","4","5","6","7","8","9"];
 
 // 格子参数
-const CELL = 36;       // 每格像素（节点中心间距）
-const NODE_R = 10;     // 节点圆半径
-const LABEL_W = 20;    // 左侧行标签宽度
-const LABEL_H = 16;    // 顶部列标签高度
-const PAD = 8;         // 外边距
+const CELL = 36;
+const NODE_R = 10;
+const LABEL_W = 20;
+const LABEL_H = 16;
+const PAD = 8;
 
-// 计算节点中心坐标（相对于SVG/容器左上角）
 function nodeCenter(rowIdx: number, colIdx: number): [number, number] {
   const x = PAD + LABEL_W + colIdx * CELL + CELL / 2;
   const y = PAD + LABEL_H + rowIdx * CELL + CELL / 2;
   return [x, y];
 }
 
-// 从节点名称解析行列索引
 function nodeToRowCol(node: string): [number, number] {
   const row = ROW_LABELS.indexOf(node[0]);
   const col = parseInt(node.slice(1)) - 1;
@@ -48,13 +36,8 @@ function nodeToRowCol(node: string): [number, number] {
 
 // T1-T4 专属颜色定义
 const TREASURE_PALETTE: Record<"T1"|"T2"|"T3"|"T4", {
-  fill: string;
-  stroke: string;
-  glow: string;
-  hoverFill: string;
-  hoverStroke: string;
-  legend: string;
-  label: string;
+  fill: string; stroke: string; glow: string;
+  hoverFill: string; hoverStroke: string; legend: string; label: string;
 }> = {
   T1: {
     fill: "rgba(136,19,55,0.85)", stroke: "rgba(244,63,94,0.9)", glow: "rgba(244,63,94,0.5)",
@@ -78,7 +61,6 @@ const TREASURE_PALETTE: Record<"T1"|"T2"|"T3"|"T4", {
   },
 };
 
-// 获取节点颜色配置
 function getNodeColors(status: NodeStatus): { fill: string; stroke: string; glow?: string; textColor: string } {
   switch (status) {
     case "player":
@@ -119,30 +101,26 @@ function getHoverColors(status: NodeStatus): { fill: string; stroke: string; glo
   return { fill: "rgba(51,65,85,0.8)", stroke: "rgba(100,116,139,0.9)" };
 }
 
-function getNodeTooltip(node: string, status: NodeStatus, treasures: any[]): string {
-  const baseLabels: Partial<Record<NodeStatus, string>> = {
-    active: "可通行节点",
-    player: "当前位置",
-    treasure: "已找到宝藏",
-    "candidate-T1": "T1 候选点",
-    "candidate-T2": "T2 候选点",
-    "candidate-T3": "T3 候选点",
-    "candidate-T4": "T4 候选点",
-    eliminated: "已排除",
-    path: "建议路径",
-    "signal-1": "感知距离1",
-    "signal-2": "感知距离2",
-    "signal-3": "感知距离3",
-  };
-  const candidateTreasures = treasures
-    .filter(t => !t.found && t.candidates.includes(node))
-    .map(t => `${t.id}(${t.candidates.length}个候选)`);
-  let tip = `${node} — ${baseLabels[status] || status}`;
-  if (candidateTreasures.length > 0) tip += ` | ${candidateTreasures.join(", ")}`;
-  return tip;
+// 选中节点高亮圈（持续停留，跟随点击移动）
+interface SelectedRingProps {
+  cx: number;
+  cy: number;
+  r: number;
+}
+function SelectedRing({ cx, cy, r }: SelectedRingProps) {
+  return (
+    <circle
+      cx={cx} cy={cy} r={r + 6}
+      fill="none"
+      stroke="rgba(255,255,255,0.9)"
+      strokeWidth={2}
+      strokeDasharray="4 2"
+      style={{ pointerEvents: "none" }}
+    />
+  );
 }
 
-// 单个节点组件（SVG circle）
+// 单个节点组件
 interface NodeCircleProps {
   node: string;
   cx: number;
@@ -150,15 +128,24 @@ interface NodeCircleProps {
   status: NodeStatus;
   pathIndex: number;
   treasureLabel: string;
-  tooltip: string;
+  // tooltip 基础文本（节点名+状态+候选信息）
+  tooltipBase: string;
+  // 与当前位置的最短距离（BFS）
+  distToPlayer: number | undefined;
+  // 该节点已感知到的信号值列表（过滤掉已找到宝藏后的有效信号），null 表示无信号
+  sensedSignals: number[] | null | undefined; // undefined=未感知过
   onNodeClick: (node: string) => void;
   isClickable: boolean;
 }
 
 const NodeCircle = React.memo(({
-  node, cx, cy, status, pathIndex, treasureLabel, tooltip, onNodeClick, isClickable
+  node, cx, cy, status, pathIndex, treasureLabel,
+  tooltipBase, distToPlayer, sensedSignals,
+  onNodeClick, isClickable
 }: NodeCircleProps) => {
   const [hovered, setHovered] = useState(false);
+  // 不再需要本地点击状态，选中效果由父组件统一管理
+
   const isPlayer = status === "player";
   const isTreasure = status === "treasure";
   const isPath = pathIndex >= 0;
@@ -175,12 +162,34 @@ const NodeCircle = React.memo(({
   const r = isPlayer ? NODE_R + 2 : isTreasure ? NODE_R + 1 : NODE_R;
   const strokeW = isPlayer ? 2.5 : isTreasure ? 2 : hovered ? 2 : 1.5;
 
+  // 距离徽章颜色
+  const distColor =
+    distToPlayer === 1 ? { bg: "rgba(127,29,29,0.9)", border: "rgba(239,68,68,0.8)", text: "rgb(252,165,165)" } :
+    distToPlayer === 2 ? { bg: "rgba(120,53,15,0.9)", border: "rgba(245,158,11,0.8)", text: "rgb(253,230,138)" } :
+    distToPlayer === 3 ? { bg: "rgba(6,78,59,0.9)", border: "rgba(16,185,129,0.8)", text: "rgb(167,243,208)" } :
+                         { bg: "rgba(15,23,42,0.9)", border: "rgba(100,116,139,0.5)", text: "rgb(148,163,184)" };
+
+  // 信号值徽章颜色（与距离色系一致）
+  const signalBadgeColor = (d: number) =>
+    d === 1 ? { bg: "rgba(127,29,29,0.9)", border: "rgba(239,68,68,0.8)", text: "rgb(252,165,165)" } :
+    d === 2 ? { bg: "rgba(120,53,15,0.9)", border: "rgba(245,158,11,0.8)", text: "rgb(253,230,138)" } :
+              { bg: "rgba(6,78,59,0.9)", border: "rgba(16,185,129,0.8)", text: "rgb(167,243,208)" };
+
+  const handleClick = () => {
+    if (!isClickable) return;
+    onNodeClick(node);
+  };
+
+  // tooltip 内容：基础信息 + 最短距离 + 已感知信号
+  const hasDistInfo = !isPlayer && distToPlayer !== undefined && distToPlayer !== Infinity;
+  const hasSenseInfo = sensedSignals !== undefined;
+
   return (
     <g
-      style={{ cursor: isClickable && !isPlayer ? "pointer" : "default" }}
+      style={{ cursor: isClickable ? "pointer" : "default" }}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
-      onClick={() => isClickable && !isPlayer && onNodeClick(node)}
+      onClick={handleClick}
     >
       {/* 发光效果 */}
       {glow && (isPlayer || isTreasure || isCandidate || isPath || hovered) && (
@@ -251,7 +260,7 @@ const NodeCircle = React.memo(({
         </text>
       )}
 
-      {/* 普通节点标签（非候选、非玩家、非宝藏） */}
+      {/* 普通节点标签 */}
       {!isPlayer && !isTreasure && !isCandidate && (
         <text x={cx} y={cy + 0.5} textAnchor="middle" dominantBaseline="middle"
           fontSize={6} fill={baseColors.textColor} opacity={isEliminated ? 0.4 : 0.8}
@@ -261,29 +270,72 @@ const NodeCircle = React.memo(({
       )}
 
       {/* 悬停 Tooltip */}
-      {hovered && tooltip && (
+      {hovered && (
         <foreignObject
-          x={cx - 80}
-          y={cy - r - 36}
-          width={160}
-          height={30}
+          x={cx - 90}
+          y={cy - r - (hasDistInfo || hasSenseInfo ? 104 : 76)}
+          width={180}
+          height={hasDistInfo || hasSenseInfo ? 68 : 36}
           style={{ pointerEvents: "none", overflow: "visible" }}
         >
           <div
             style={{
               background: "rgba(15,23,42,0.97)",
               border: "1px solid rgba(100,116,139,0.5)",
-              borderRadius: "4px",
-              padding: "3px 6px",
+              borderRadius: "5px",
+              padding: "4px 7px",
               fontSize: "0.55rem",
               fontFamily: "monospace",
               color: "rgb(226,232,240)",
               boxShadow: "0 4px 12px rgba(0,0,0,0.5)",
               whiteSpace: "nowrap",
               textAlign: "center",
+              display: "flex",
+              flexDirection: "column",
+              gap: "3px",
             }}
           >
-            {tooltip}
+            {/* 节点名 + 状态 */}
+            <div style={{ color: "rgb(226,232,240)" }}>{tooltipBase}</div>
+
+            {/* 与当前位置的最短距离 */}
+            {hasDistInfo && (
+              <div style={{
+                display: "inline-flex", alignItems: "center", gap: "3px", justifyContent: "center",
+                background: distColor.bg, border: `1px solid ${distColor.border}`,
+                borderRadius: "3px", padding: "1px 6px",
+                color: distColor.text, fontWeight: "bold", fontSize: "0.6rem",
+              }}>
+                <span style={{ opacity: 0.8 }}>距当前位置</span>
+                <span style={{ fontSize: "0.75rem" }}>{distToPlayer}</span>
+                <span style={{ opacity: 0.8 }}>步</span>
+              </div>
+            )}
+
+            {/* 已感知信号 */}
+            {hasSenseInfo && (
+              <div style={{ display: "flex", alignItems: "center", gap: "3px", justifyContent: "center" }}>
+                <span style={{ opacity: 0.6, fontSize: "0.5rem" }}>已感知:</span>
+                {sensedSignals === null || sensedSignals!.length === 0 ? (
+                  <span style={{
+                    background: "rgba(30,41,59,0.8)", border: "1px solid rgba(71,85,105,0.5)",
+                    borderRadius: "3px", padding: "1px 5px",
+                    color: "rgb(100,116,139)", fontSize: "0.55rem",
+                  }}>无信号</span>
+                ) : (
+                  sensedSignals!.map((d, i) => {
+                    const c = signalBadgeColor(d);
+                    return (
+                      <span key={i} style={{
+                        background: c.bg, border: `1px solid ${c.border}`,
+                        borderRadius: "3px", padding: "1px 5px",
+                        color: c.text, fontWeight: "bold", fontSize: "0.6rem",
+                      }}>d={d}</span>
+                    );
+                  })
+                )}
+              </div>
+            )}
           </div>
         </foreignObject>
       )}
@@ -294,13 +346,16 @@ const NodeCircle = React.memo(({
 NodeCircle.displayName = "NodeCircle";
 
 export default function TreasureMap() {
-  const { state, getNodeStatus } = useGame();
+  const { state, getNodeStatus, getDistanceMap } = useGame();
   const { currentAdvice, treasures, gameStarted, senseHistory } = state;
 
-  // 计算已感知过的节点集合（曾经站过的位置）
+  // 当前选中节点（点击后持续高亮，再次点击同一节点取消）
+  const [selectedNode, setSelectedNode] = useState<string | null>(null);
+
+  // 已感知过的节点集合
   const sensedNodes = useMemo(() => new Set(senseHistory.map(r => r.position)), [senseHistory]);
 
-  // 建立路径索引 Map：node -> pathIndex
+  // 建立路径索引 Map
   const pathMap = useMemo(() => {
     const map = new Map<string, number>();
     if (currentAdvice?.path) {
@@ -309,17 +364,46 @@ export default function TreasureMap() {
     return map;
   }, [currentAdvice]);
 
-  // 点击节点：自动填入位置输入框
+  // 从当前位置出发的 BFS 最短距离表
+  const distanceMap = useMemo(() => getDistanceMap(), [getDistanceMap]);
+
+  // 建立感知信号 Map：node -> 有效信号值列表（过滤掉已找到宝藏对应的信号）
+  // 逻辑：取该节点最后一次感知记录的信号；若信号值对应的所有宝藏均已找到，则过滤掉该信号值
+  const senseSignalMap = useMemo(() => {
+    const map = new Map<string, number[] | null>();
+    // 已找到的宝藏集合（用于过滤信号）
+    const foundTreasureIds = new Set(treasures.filter(t => t.found).map(t => t.id));
+    // 未找到的宝藏 id 集合
+    const activeTreasureIds = new Set(treasures.filter(t => !t.found).map(t => t.id));
+
+    // 遍历所有感知记录（按顺序，后面的覆盖前面的）
+    for (const record of senseHistory) {
+      if (record.signal === null || record.signal.length === 0) {
+        // 无信号：直接记录 null
+        map.set(record.position, null);
+      } else {
+        // 有信号：过滤掉所有对应宝藏均已找到的信号值
+        // 判断依据：若该节点在某宝藏的 foundAt 位置，或该宝藏已找到且该信号值与找到时的距离一致
+        // 简化处理：只要还有未找到的宝藏，就保留有效信号；若所有宝藏都找到了则不显示
+        const validSignals = activeTreasureIds.size > 0 ? record.signal : [];
+        map.set(record.position, validSignals.length > 0 ? validSignals : null);
+      }
+    }
+    return map;
+  }, [senseHistory, treasures]);
+
+  // 点击节点：自动填入位置输入框，并更新选中高亮
   const handleNodeClick = useCallback((node: string) => {
+    setSelectedNode(prev => prev === node ? null : node);
     window.dispatchEvent(new CustomEvent("map-node-click", { detail: { node } }));
-    toast.info(`已选择节点 ${node}`, { duration: 1500 });
+    toast.info(`已选择节点 ${node}`, { duration: 1200 });
   }, []);
 
-  // 计算 SVG 画布尺寸
+  // SVG 画布尺寸
   const svgWidth = PAD * 2 + LABEL_W + COL_LABELS.length * CELL;
   const svgHeight = PAD * 2 + LABEL_H + ROW_LABELS.length * CELL;
 
-  // 预计算所有节点的坐标
+  // 预计算所有节点坐标
   const nodePositions = useMemo(() => {
     const map = new Map<string, [number, number]>();
     ROW_LABELS.forEach((row, ri) => {
@@ -333,7 +417,7 @@ export default function TreasureMap() {
     return map;
   }, []);
 
-  // 判断两个连续路径节点之间的连线
+  // 路径连线集合
   const pathEdgeSet = useMemo(() => {
     const set = new Set<string>();
     if (currentAdvice?.path && currentAdvice.path.length > 1) {
@@ -377,7 +461,7 @@ export default function TreasureMap() {
           );
         })}
 
-        {/* ── 连接线层（底层） ── */}
+        {/* ── 连接线层 ── */}
         {ROADS.map(([a, b]) => {
           const posA = nodePositions.get(a);
           const posB = nodePositions.get(b);
@@ -392,43 +476,54 @@ export default function TreasureMap() {
           if (isOnPath) {
             return (
               <g key={`${a}-${b}`}>
-                {/* 路径发光 */}
-                <line
-                  x1={posA[0]} y1={posA[1]} x2={posB[0]} y2={posB[1]}
-                  stroke="rgba(96,165,250,0.35)" strokeWidth={6}
-                  strokeLinecap="round"
-                />
-                {/* 路径主线 */}
-                <line
-                  x1={posA[0]} y1={posA[1]} x2={posB[0]} y2={posB[1]}
-                  stroke="rgba(96,165,250,0.9)" strokeWidth={2.5}
-                  strokeLinecap="round"
-                  strokeDasharray="none"
-                />
+                <line x1={posA[0]} y1={posA[1]} x2={posB[0]} y2={posB[1]}
+                  stroke="rgba(96,165,250,0.35)" strokeWidth={6} strokeLinecap="round" />
+                <line x1={posA[0]} y1={posA[1]} x2={posB[0]} y2={posB[1]}
+                  stroke="rgba(96,165,250,0.9)" strokeWidth={2.5} strokeLinecap="round" />
               </g>
             );
           }
 
           return (
-            <line
-              key={`${a}-${b}`}
+            <line key={`${a}-${b}`}
               x1={posA[0]} y1={posA[1]} x2={posB[0]} y2={posB[1]}
               stroke={isElimA && isElimB ? "rgba(30,41,59,0.2)" : "rgba(51,65,85,0.4)"}
-              strokeWidth={1}
-              strokeLinecap="round"
+              strokeWidth={1} strokeLinecap="round"
             />
           );
         })}
 
-        {/* ── 节点层（顶层） ── */}
+        {/* ── 节点层 ── */}
         {Array.from(nodePositions.entries()).map(([node, [cx, cy]]) => {
           const status = getNodeStatus(node);
           const pathIndex = pathMap.get(node) ?? -1;
           const treasureLabel = treasures.find(t => t.found && t.foundAt === node)?.id ?? "";
-          const tooltip = getNodeTooltip(node, status, treasures);
+          const distToPlayer = distanceMap.get(node);
+
+          // tooltip 基础文本（节点名+状态+候选信息，不含距离和信号）
+          const baseLabels: Partial<Record<NodeStatus, string>> = {
+            active: "可通行节点", player: "当前位置", treasure: "已找到宝藏",
+            "candidate-T1": "T1 候选点", "candidate-T2": "T2 候选点",
+            "candidate-T3": "T3 候选点", "candidate-T4": "T4 候选点",
+            eliminated: "已排除", path: "建议路径",
+            "signal-1": "感知距离1", "signal-2": "感知距离2", "signal-3": "感知距离3",
+          };
+          const candidateTreasures = treasures
+            .filter(t => !t.found && t.candidates.includes(node))
+            .map(t => `${t.id}(${t.candidates.length})`);
+          let tooltipBase = `${node} — ${baseLabels[status] || status}`;
+          if (candidateTreasures.length > 0) tooltipBase += ` | ${candidateTreasures.join(", ")}`;
+
+          // 该节点的已感知信号（undefined=未感知，null=无信号，数组=有信号值）
+          const sensedSignals = senseSignalMap.has(node) ? senseSignalMap.get(node)! : undefined;
+          const isSelected = selectedNode === node;
 
           return (
             <g key={node}>
+              {/* 选中高亮圈 */}
+              {isSelected && (
+                <SelectedRing cx={cx} cy={cy} r={status === "player" ? NODE_R + 2 : status === "treasure" ? NODE_R + 1 : NODE_R} />
+              )}
               <NodeCircle
                 node={node}
                 cx={cx}
@@ -436,11 +531,13 @@ export default function TreasureMap() {
                 status={status}
                 pathIndex={pathIndex}
                 treasureLabel={treasureLabel}
-                tooltip={tooltip}
+                tooltipBase={tooltipBase}
+                distToPlayer={distToPlayer}
+                sensedSignals={sensedSignals}
                 onNodeClick={handleNodeClick}
                 isClickable={gameStarted}
               />
-              {/* 已感知标记：小圆圈+眼睛图标 */}
+              {/* 已感知标记：左上角小圆圈+眼睛 */}
               {sensedNodes.has(node) && status !== "player" && status !== "treasure" && (
                 <>
                   <circle
@@ -504,7 +601,7 @@ export default function TreasureMap() {
 
       {gameStarted && (
         <div className="mt-1.5" style={{ fontSize: "0.55rem", color: "rgb(71,85,105)", fontFamily: "monospace" }}>
-          💡 点击节点可快速填入当前位置
+          💡 点击节点可快速填入当前位置 · 悬停可查看最短距离和已感知信号
         </div>
       )}
     </div>
