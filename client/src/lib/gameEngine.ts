@@ -142,6 +142,9 @@ export interface TreasureState {
 // 对某个宝藏 T 的候选点过滤规则（signals = 信号数组，已排序）：
 //
 // 无信号：排除距离 1-3 的候选点（这些距离应产生信号但没有，说明宝藏不在此处）。
+// 关键：无信号过滤必须考虑已找到宝藏的贡献！
+// 若感知范围内已有宝藏（通过 otherMinDists 传入），则无信号不可能成立，
+// 不应对 T 应用无信号过滤。
 //
 // 有信号 signals：
 //   1. 排除距离 < min(signals) 的候选点（最小信号约束）
@@ -150,11 +153,11 @@ export interface TreasureState {
 //      - 若 minDist 在 signals 中 但 该距离值被其他宝藏共享 → 信号来源不确定 → 只执行约束①
 //      - 若 minDist <= 3 但不在 signals 中 → T 不在感知范围内 → 排除距离 <= 3 的候选点
 //      - 若 minDist > 3 → T 不在感知范围内，无额外约束
-//   3. 单信号隐含约束：若 signals 长度为1，则感知范围内恰好只有1个宝藏。
-//      若 T 的 minDist > 3（T 不在感知范围内），但其他宝藏中有 >=2 个在感知范围内，
-//      则说明当前候选点分布与单信号矛盾，需进一步排除（此约束由调用方通过 otherMinDists 传入）。
+//   3. 信号数量约束：感知范围内宝藏数必须等于 signals.length。
+//      若其他宝藏已占用了所有信号（otherInRangeCount >= signals.length），
+//      则 T 不在感知范围内，应排除距离 <= 3 的候选点。
 //
-// otherMinDists: 同一感知点处，其他宝藏的 minDist 集合（用于判断信号是否被共享）
+// otherMinDists: 同一感知点处，其他宝藏的 minDist 集合（包括已找到的宝藏，用其真实位置计算）
 export function bayesianFilter(
   candidates: Node[],
   history: SenseRecord[],
@@ -166,19 +169,28 @@ export function bayesianFilter(
   for (let ri = 0; ri < history.length; ri++) {
     const record = history[ri];
     const distMap = bfsDistance(record.position, CITIES, adj);
+    // 其他宝藏在感知范围内的距离集合（包括已找到的宝藏）
+    const otherMinDists = otherMinDistsPerRecord?.[ri];
+    // 其他宝藏中在感知范围内（minDist <= 3）的数量
+    const otherInRangeCount = otherMinDists ? Array.from(otherMinDists.values()).filter(d => d <= 3).length : 0;
 
     if (record.signal === null) {
-      // 无信号：所有宝藏距离 >= 4（或距离=0，即玩家站在该候选点上但宝藏未被感知）
-      // 保留距离=0（玩家当前位置，感知规则不计距离0）和距离>=4的候选点
-      // 排除距离 1-3 的候选点（这些距离的宝藏应该产生信号但没有，说明不在这里）
-      filtered = filtered.filter(c => {
-        const d = distMap.get(c) ?? Infinity;
-        return d === 0 || d >= 4;
-      });
+      // 无信号：感知范围内没有任何宝藏。
+      // 关键修复：若其他宝藏已占据感知范围内（otherInRangeCount > 0），
+      // 则无信号不可能成立（其他宝藏应该产生信号）——不应对 T 应用无信号过滤。
+      // 只有其他宝藏全部在感知范围外时，无信号才对 T 有约束力。
+      if (otherInRangeCount === 0) {
+        // 其他宝藏全部在范围外，无信号说明 T 也在范围外
+        filtered = filtered.filter(c => {
+          const d = distMap.get(c) ?? Infinity;
+          return d === 0 || d >= 4;
+        });
+      }
+      // 若 otherInRangeCount > 0，说明已有其他宝藏在范围内但无信号是不可能的，
+      // 这属于数据异常（玩家输入错误），保守处理：不对 T 进行任何过滤。
     } else {
       const signals = [...record.signal].sort((a, b) => a - b);
       const minSignal = signals[0];
-      const isSingleSignal = signals.length === 1;
 
       // 约束①：排除距离 < min(signals) 的候选点
       filtered = filtered.filter(c => (distMap.get(c) ?? Infinity) >= minSignal);
@@ -186,34 +198,37 @@ export function bayesianFilter(
       // 约束②：根据 T 的 minDist 与 signals 的关系进一步收窄
       if (filtered.length > 0) {
         const minDist = Math.min(...filtered.map(c => distMap.get(c) ?? Infinity));
-        // 获取其他宝藏在该感知点的 minDist 集合（用于判断信号是否被共享）
-        const otherMinDists = otherMinDistsPerRecord?.[ri];
-        // 其他宝藏中在感知范围内（minDist <= 3）的数量
-        const otherInRangeCount = otherMinDists ? Array.from(otherMinDists.values()).filter(d => d <= 3).length : 0;
 
         if (minDist <= 3) {
           if (signals.includes(minDist)) {
             // 检查该距离值是否被其他宝藏共享
-            const isShared = otherMinDists ? Array.from(otherMinDists.values()).includes(minDist) : false;
+            // 修复：isShared 应检查其他宝藏的 minDist 是否 <= minDist
+            // 即：其他宝藏的候选点中是否存在距离 <= minDist 的节点（可能在 minDist 处）
+            // 使用 minDist（严格等于）会导致误判：
+            //   例如 T4 的候选点 minDist=1，而 T2 的 minDist=3，
+            //   isShared=false（1 != 3），但 T4 的真实位置可能在距离3处
+            const isShared = otherMinDists
+              ? Array.from(otherMinDists.values()).some(d => d <= minDist && d <= 3)
+              : false;
             if (!isShared) {
               // T 是该信号的唯一来源 → 只保留距离 == minDist 的候选点
               filtered = filtered.filter(c => (distMap.get(c) ?? Infinity) === minDist);
             }
             // 若被共享，只执行约束①（已完成），不进一步收窄
           } else {
-            // T 的 minDist <= 3 但不在信号列表中 → T 不在感知范围内
-            filtered = filtered.filter(c => (distMap.get(c) ?? Infinity) > 3);
+            // T 的 minDist <= 3 但不在信号列表中
+            // 约束③：信号数量约束——如果其他宝藏已占据了所有信号，
+            // 则 T 不在感知范围内，应排除距离 <= 3 的候选点。
+            if (otherInRangeCount >= signals.length) {
+              // 其他宝藏已占据了所有信号，T 不在感知范围内
+              filtered = filtered.filter(c => (distMap.get(c) ?? Infinity) > 3);
+            }
+            // 若其他宝藏未占据所有信号，T 可能占据其中一个，只执行约束①
           }
-        } else if (isSingleSignal && minDist > 3) {
-          // 约束③（单信号隐含约束）：单信号意味着感知范围内恰好1个宝藏。
-          // 若 T 不在感知范围内（minDist > 3），且其他宝藏中已有 >= 1 个在感知范围内，
-          // 则 T 不在感知范围内是合理的，无需额外约束。
-          // 但若其他宝藏中没有任何一个在感知范围内（otherInRangeCount === 0），
-          // 则说明没有宝藏能产生该信号，这与有信号矛盾——此情况属于数据异常，保守处理不过滤。
-          // （此分支目前为占位，保留扩展空间）
-          void otherInRangeCount; // 抑制未使用变量警告
         }
-        // 若 minDist > 3 且非单信号，T 不在感知范围内，无额外约束
+        // 若 minDist > 3，T 不在感知范围内
+        // 约束③：若其他宝藏已占据了所有信号，T 不在范围内是合理的。
+        // 若其他宝藏未占据所有信号，说明还有信号未归因——但 T 不在范围内，无法产生信号，无需额外约束。
       }
     }
   }
