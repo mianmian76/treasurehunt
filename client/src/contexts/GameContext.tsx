@@ -140,8 +140,16 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
     }));
   }, []);
 
-  // 计算某条感知记录对应的“其他宝藏 minDist 集啀”
+  // 计算某条感知记录对应的“其他宝藏 minDist 集啊”
   // 用于 bayesianFilter 判断信号是否被多个宝藏共享
+  //
+  // 修复：只包含「已找到」宝藏的真实位置距离。
+  // 未找到的宝藏候选点尚未收敛，将其 minDist 纳入计算会导致循环依赖问题：
+  //   如果 T4 候选点还包含 I6，I6 距 L6 为 3步，则对 T1 计算时会认为
+  //   “T4 在范围内”，导致无信号时跳过对 T1 的过滤，同时 T4 自身也因其他宝藏而被跳过。
+  //
+  // 已找到的宝藏位置确定，可靠地参与信号归因；
+  // 未找到的宝藏不参与（其位置不确定，不能用于判断无信号的合理性）。
   const computeOtherMinDists = useCallback((
     record: SenseRecord,
     treasures: TreasureState[],
@@ -151,15 +159,13 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
     const distMap = bfsDistance(record.position, CITIES, adj);
     for (const t of treasures) {
       if (t.id === currentTreasureId) continue;
-      // 已找到的宝藏仍需参与信号归因：它们依然会发出信号
-      // 使用真实位置（foundAt）计算距离，未找到的宝藏使用候选点 minDist
-      let minDist: number;
+      // 只包含已找到的宝藏（位置确定）
+      // 未找到的宝藏不纳入，避免循环依赖问题
       if (t.found && t.foundAt) {
-        minDist = distMap.get(t.foundAt) ?? Infinity;
-      } else {
-        minDist = Math.min(...t.candidates.map(c => distMap.get(c) ?? Infinity));
+        const minDist = distMap.get(t.foundAt) ?? Infinity;
+        if (minDist <= 3) result.set(t.id, minDist);
       }
-      if (minDist <= 3) result.set(t.id, minDist);
+      // 未找到的宝藏不参与 otherMinDists
     }
     return result;
   }, [adj]);
