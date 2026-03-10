@@ -228,38 +228,50 @@ export interface TreasureState {
 //      若其他宝藏已占用了所有信号（otherInRangeCount >= signals.length），
 //      则 T 不在感知范围内，应排除距离 <= 3 的候选点。
 //
-// otherMinDists: 同一感知点处，其他宝藏的 minDist 集合（包括已找到的宝藏，用其真实位置计算）
+// otherMinDistsAll: 所有其他宝藏的候选点 minDist（用于有信号时的 isShared 和 otherInRangeCount）
+// otherMinDistsConfirmed: 只包含已找到宝藏的真实位置距离（用于无信号时的 confirmedInRange）
+//
+// 两者分开的原因：
+//   - 有信号时：需要知道"其他宝藏是否可能产生了这个信号"，必须包含未找到宝藏的候选点 minDist
+//   - 无信号时：只有位置确定的宝藏（已找到）才能可靠判断是否在范围内，
+//     未找到宝藏的候选点未收敛，用其 minDist 会导致循环依赖
+export interface OtherMinDistsRecord {
+  all: Map<string, number>;       // 所有其他宝藏的候选点 minDist（含未找到）
+  confirmed: Map<string, number>; // 只含已找到宝藏的真实位置距离
+}
+
 export function bayesianFilter(
   candidates: Node[],
   history: SenseRecord[],
   adj: Map<Node, Node[]>,
-  otherMinDistsPerRecord?: Map<string, number>[] // 每条记录对应的"其他宝藏 minDist 集合"，key=宝藏ID
+  otherMinDistsPerRecord?: OtherMinDistsRecord[] // 每条记录对应的"其他宝藏 minDist 集合"
 ): Node[] {
   let filtered = [...candidates];
 
   for (let ri = 0; ri < history.length; ri++) {
     const record = history[ri];
     const distMap = bfsDistance(record.position, CITIES, adj);
-    // 其他宝藏在感知范围内的距离集合（包括已找到的宝藏）
-    const otherMinDists = otherMinDistsPerRecord?.[ri];
-    // 其他宝藏中在感知范围内（minDist <= 3）的数量
-    const otherInRangeCount = otherMinDists ? Array.from(otherMinDists.values()).filter(d => d <= 3).length : 0;
+    const otherRec = otherMinDistsPerRecord?.[ri];
+    // 有信号时用 all（包含未找到宝藏），无信号时用 confirmed（只含已找到宝藏）
+    const otherMinDistsAll = otherRec?.all;
+    const otherMinDistsConfirmed = otherRec?.confirmed;
+    // 其他宝藏中在感知范围内（minDist <= 3）的数量（用 all，包含未找到宝藏）
+    const otherInRangeCount = otherMinDistsAll ? Array.from(otherMinDistsAll.values()).filter(d => d <= 3).length : 0;
 
     if (record.signal === null) {
       // 无信号：感知范围内没有任何宝藏。
       //
-      // 修复：只有「位置已确定」的宝藏（已找到）才能可靠地判断是否在感知范围内。
-      // 未找到的宝藏候选点集合尚未收敛，用其 minDist 判断会导致循环依赖：
+      // 关键：只用已找到宝藏（confirmed）判断是否有宝藏在范围内。
+      // 未找到宝藏的候选点未收敛，用其 minDist 会导致循环依赖：
       //   T4未过滤 → T4 minDist=3 → 其他宝藏跳过过滤 → T4也跳过过滤
       //
       // 正确逻辑：
-      //   - 若有已找到的宝藏（位置确定）在感知范围内（d<=3），则无信号是矛盾的
-      //     （玩家输入错误），保守处理：不对 T 进行任何过滤。
+      //   - 若有已找到的宝藏（位置确定）在感知范围内（d<=3），则无信号是矛盾的，
+      //     保守处理：不对 T 进行任何过滤。
       //   - 否则，无信号说明 T 也在感知范围外，排除距离<=3的候选点。
-      const confirmedInRange = otherMinDists
-        ? Array.from(otherMinDists.entries()).filter(([, d]) => d <= 3).length
+      const confirmedInRange = otherMinDistsConfirmed
+        ? Array.from(otherMinDistsConfirmed.values()).filter(d => d <= 3).length
         : 0;
-      // 注意：otherMinDists 只包含已找到宝藏的真实位置距离（见 computeOtherMinDists 修复）
       if (confirmedInRange === 0) {
         // 没有已确认的宝藏在范围内，无信号说明 T 也在范围外
         filtered = filtered.filter(c => {
@@ -267,7 +279,7 @@ export function bayesianFilter(
           return d === 0 || d >= 4;
         });
       }
-      // 若 confirmedInRange > 0，说明已找到的宝藏在范围内但无信号是矛盾的，
+      // 若 confirmedInRange > 0，已找到的宝藏在范围内但无信号是矛盾的，
       // 保守处理：不对 T 进行任何过滤。
     } else {
       const signals = [...record.signal].sort((a, b) => a - b);
@@ -282,9 +294,9 @@ export function bayesianFilter(
 
         if (minDist <= 3) {
           if (signals.includes(minDist)) {
-            // 检查该距离值是否被其他宝藏共享
-            const isShared = otherMinDists
-              ? Array.from(otherMinDists.values()).some(d => d <= minDist && d <= 3)
+            // 检查该距离值是否被其他宝藏共享（用 all，包含未找到宝藏的候选点 minDist）
+            const isShared = otherMinDistsAll
+              ? Array.from(otherMinDistsAll.values()).some(d => d <= minDist && d <= 3)
               : false;
             if (!isShared) {
               // T 是该信号的唯一来源 → 只保留距离 == minDist 的候选点
@@ -302,9 +314,7 @@ export function bayesianFilter(
             // 若其他宝藏未占据所有信号，T 可能占据其中一个，只执行约束①
           }
         }
-        // 若 minDist > 3，T 不在感知范围内
-        // 约束③：若其他宝藏已占据了所有信号，T 不在范围内是合理的。
-        // 若其他宝藏未占据所有信号，说明还有信号未归因——但 T 不在范围内，无法产生信号，无需额外约束。
+        // 若 minDist > 3，T 不在感知范围内，无额外约束
       }
     }
   }
