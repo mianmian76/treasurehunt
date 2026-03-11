@@ -142,13 +142,11 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
 
   // 计算某条感知记录对应的"其他宝藏 minDist 集合"
   // 返回两个 Map：
-  //   all: 所有其他宝藏的候选点 minDist（含未找到），用于有信号时的 isShared 判断
-  //   confirmed: 只含已找到宝藏的真实位置距离，用于无信号时的 confirmedInRange 判断
+  //   all: 所有其他【未找到】宝藏的候选点 minDist，用于有信号时的 isShared 和 otherInRangeCount 判断
+  //   confirmed: 保留字段（已不再用于无信号过滤，仅保持接口兼容）
   //
-  // 两者分开的原因：
-  //   有信号时：需要知道"其他宝藏是否可能产生了这个信号"，必须包含未找到宝藏的候选点 minDist
-  //   无信号时：只有位置确定的宝藏（已找到）才能可靠判断是否在范围内，
-  //   未找到宝藏的候选点未收敛，用其 minDist 会导致循环依赖
+  // 修复（v5.1）：已找到的宝藏不再产生信号，不应加入 all。
+  // 否则已找到宝藏会错误占据信号位，导致其他宝藏的候选点无法正确收敛。
   const computeOtherMinDists = useCallback((
     record: SenseRecord,
     treasures: TreasureState[],
@@ -159,20 +157,15 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
     const distMap = bfsDistance(record.position, CITIES, adj);
     for (const t of treasures) {
       if (t.id === currentTreasureId) continue;
-      if (t.found && t.foundAt) {
-        // 已找到宝藏：用真实位置距离，同时加入 all 和 confirmed
-        const d = distMap.get(t.foundAt) ?? Infinity;
-        if (d <= 3) {
-          all.set(t.id, d);
-          confirmed.set(t.id, d);
-        }
-      } else if (!t.found && t.candidates.length > 0) {
-        // 未找到宝藏：用候选点的最近距离，只加入 all（不加入 confirmed）
+      if (!t.found && t.candidates.length > 0) {
+        // 未找到宝藏：用候选点的最近距离，加入 all
+        // 已找到的宝藏不再产生信号，不应包含在 all 中
         const minDist = Math.min(...t.candidates.map(c => distMap.get(c) ?? Infinity));
         if (minDist <= 3) {
           all.set(t.id, minDist);
         }
       }
+      // confirmed 字段保留为空（已不再用于无信号过滤）
     }
     return { all, confirmed };
   }, [adj]);

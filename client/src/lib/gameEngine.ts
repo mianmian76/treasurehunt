@@ -206,35 +206,31 @@ export interface TreasureState {
 // 贝叶斯过滤：根据所有历史感知记录过滤候选点
 //
 // 游戏规则：
-//   无信号（null）：所有宝藏距离均 >= 4。
-//   单信号 [d]：感知范围内恰好有1个宝藏，距离为 d。
-//   双信号 [d1, d2]（d1 <= d2）：感知范围内恰好有2个宝藏，距离分别为 d1 和 d2。
+//   无信号（null）：感知范围内（距离1-3）没有任何【未找到的】宝藏。
+//   单信号 [d]：感知范围内恰好有1个未找到的宝藏，距离为 d。
+//   双信号 [d1, d2]（d1 <= d2）：感知范围内恰好有2个未找到的宝藏，距离分别为 d1 和 d2。
+//
+// 关键规则：已找到的宝藏不再产生信号，不参与信号计数。
 //
 // 对某个宝藏 T 的候选点过滤规则（signals = 信号数组，已排序）：
 //
-// 无信号：排除距离 1-3 的候选点（这些距离应产生信号但没有，说明宝藏不在此处）。
-// 关键：无信号过滤必须考虑已找到宝藏的贡献！
-// 若感知范围内已有宝藏（通过 otherMinDists 传入），则无信号不可能成立，
-// 不应对 T 应用无信号过滤。
+// 无信号：排除距离 1-3 的候选点（这些距离应产生信号但没有，说明未找到的宝藏不在此处）。
+// 注意：已找到的宝藏即使在感知范围内也不产生信号，不影响无信号的有效性。
+// 因此无信号时直接对 T 应用过滤，无需检查已找到宝藏的距离。
 //
 // 有信号 signals：
 //   1. 排除距离 < min(signals) 的候选点（最小信号约束）
 //   2. 计算过滤后 T 的 minDist：
-//      - 若 minDist 在 signals 中 且 该距离值未被其他宝藏占用 → T 是该信号的唯一来源 → 只保留距离 == minDist 的候选点
-//      - 若 minDist 在 signals 中 但 该距离值被其他宝藏共享 → 信号来源不确定 → 只执行约束①
+//      - 若 minDist 在 signals 中 且 该距离值未被其他未找到宝藏占用 → T 是该信号的唯一来源 → 只保留距离 == minDist 的候选点
+//      - 若 minDist 在 signals 中 但 该距离值被其他未找到宝藏共享 → 信号来源不确定 → 只执行约束①
 //      - 若 minDist <= 3 但不在 signals 中 → T 不在感知范围内 → 排除距离 <= 3 的候选点
 //      - 若 minDist > 3 → T 不在感知范围内，无额外约束
-//   3. 信号数量约束：感知范围内宝藏数必须等于 signals.length。
-//      若其他宝藏已占用了所有信号（otherInRangeCount >= signals.length），
+//   3. 信号数量约束：感知范围内未找到宝藏数必须等于 signals.length。
+//      若其他未找到宝藏已占用了所有信号（otherInRangeCount >= signals.length），
 //      则 T 不在感知范围内，应排除距离 <= 3 的候选点。
 //
-// otherMinDistsAll: 所有其他宝藏的候选点 minDist（用于有信号时的 isShared 和 otherInRangeCount）
-// otherMinDistsConfirmed: 只包含已找到宝藏的真实位置距离（用于无信号时的 confirmedInRange）
-//
-// 两者分开的原因：
-//   - 有信号时：需要知道"其他宝藏是否可能产生了这个信号"，必须包含未找到宝藏的候选点 minDist
-//   - 无信号时：只有位置确定的宝藏（已找到）才能可靠判断是否在范围内，
-//     未找到宝藏的候选点未收敛，用其 minDist 会导致循环依赖
+// otherMinDistsAll: 所有其他未找到宝藏的候选点 minDist（用于有信号时的 isShared 和 otherInRangeCount）
+// otherMinDistsConfirmed: 保留字段（已不再用于无信号过滤，仅保持接口兼容）
 export interface OtherMinDistsRecord {
   all: Map<string, number>;       // 所有其他宝藏的候选点 minDist（含未找到）
   confirmed: Map<string, number>; // 只含已找到宝藏的真实位置距离
@@ -259,28 +255,15 @@ export function bayesianFilter(
     const otherInRangeCount = otherMinDistsAll ? Array.from(otherMinDistsAll.values()).filter(d => d <= 3).length : 0;
 
     if (record.signal === null) {
-      // 无信号：感知范围内没有任何宝藏。
+      // 无信号：感知范围内没有任何【未找到的】宝藏。
       //
-      // 关键：只用已找到宝藏（confirmed）判断是否有宝藏在范围内。
-      // 未找到宝藏的候选点未收敛，用其 minDist 会导致循环依赖：
-      //   T4未过滤 → T4 minDist=3 → 其他宝藏跳过过滤 → T4也跳过过滤
-      //
-      // 正确逻辑：
-      //   - 若有已找到的宝藏（位置确定）在感知范围内（d<=3），则无信号是矛盾的，
-      //     保守处理：不对 T 进行任何过滤。
-      //   - 否则，无信号说明 T 也在感知范围外，排除距离<=3的候选点。
-      const confirmedInRange = otherMinDistsConfirmed
-        ? Array.from(otherMinDistsConfirmed.values()).filter(d => d <= 3).length
-        : 0;
-      if (confirmedInRange === 0) {
-        // 没有已确认的宝藏在范围内，无信号说明 T 也在范围外
-        filtered = filtered.filter(c => {
-          const d = distMap.get(c) ?? Infinity;
-          return d === 0 || d >= 4;
-        });
-      }
-      // 若 confirmedInRange > 0，已找到的宝藏在范围内但无信号是矛盾的，
-      // 保守处理：不对 T 进行任何过滤。
+      // 修复（v5.1）：已找到的宝藏不再产生信号，即使在感知范围内也不影响无信号的有效性。
+      // 无信号直接说明 T 也在感知范围外，排除距离 1-3 的候选点。
+      // 不再检查 confirmedInRange，避免已找到宝藏错误阻止过滤。
+      filtered = filtered.filter(c => {
+        const d = distMap.get(c) ?? Infinity;
+        return d === 0 || d >= 4;
+      });
     } else {
       const signals = [...record.signal].sort((a, b) => a - b);
       const minSignal = signals[0];
