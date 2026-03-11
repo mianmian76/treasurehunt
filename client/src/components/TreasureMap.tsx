@@ -1,12 +1,10 @@
 // ============================================================
-// 寻箱决策平台 — 交互式地图组件 v5
-// 新增功能：
-//   1. 悬停节点显示与当前位置的最短距离
-//   2. 点击节点有扩散圆圈视觉反馈
-//   3. 悬停标签中显示该节点已输入的距离信号（已找到宝藏的不显示）
+// 寻箱决策平台 — 交互式地图组件 v5.1
+// 修复：tooltip 改为 Portal 渲染，解决 A 行节点悬停窗口被遮挡的问题
 // ============================================================
 
 import React, { useMemo, useState, useCallback, useRef, useEffect } from "react";
+import { createPortal } from "react-dom";
 import { useGame, NodeStatus } from "@/contexts/GameContext";
 import { nodeFromCoords, isValidNode, ROADS, bfsDistance, buildAdjacency, CITIES } from "@/lib/gameEngine";
 import { motion } from "framer-motion";
@@ -101,6 +99,121 @@ function getHoverColors(status: NodeStatus): { fill: string; stroke: string; glo
   return { fill: "rgba(51,65,85,0.8)", stroke: "rgba(100,116,139,0.9)" };
 }
 
+// ============================================================
+// Portal Tooltip：渲染到 document.body，始终在最顶层
+// ============================================================
+interface TooltipPortalProps {
+  anchorRect: DOMRect;
+  tooltipBase: string;
+  distToPlayer: number | undefined;
+  sensedSignals: number[] | null | undefined;
+}
+
+function TooltipPortal({ anchorRect, tooltipBase, distToPlayer, sensedSignals }: TooltipPortalProps) {
+  const hasDistInfo = distToPlayer !== undefined && distToPlayer !== Infinity;
+  const hasSenseInfo = sensedSignals !== undefined;
+
+  const distColor =
+    distToPlayer === 1 ? { bg: "rgba(127,29,29,0.97)", border: "rgba(239,68,68,0.8)", text: "rgb(252,165,165)" } :
+    distToPlayer === 2 ? { bg: "rgba(120,53,15,0.97)", border: "rgba(245,158,11,0.8)", text: "rgb(253,230,138)" } :
+    distToPlayer === 3 ? { bg: "rgba(6,78,59,0.97)", border: "rgba(16,185,129,0.8)", text: "rgb(167,243,208)" } :
+                         { bg: "rgba(15,23,42,0.97)", border: "rgba(100,116,139,0.5)", text: "rgb(148,163,184)" };
+
+  const signalBadgeColor = (d: number) =>
+    d === 1 ? { bg: "rgba(127,29,29,0.97)", border: "rgba(239,68,68,0.8)", text: "rgb(252,165,165)" } :
+    d === 2 ? { bg: "rgba(120,53,15,0.97)", border: "rgba(245,158,11,0.8)", text: "rgb(253,230,138)" } :
+              { bg: "rgba(6,78,59,0.97)", border: "rgba(16,185,129,0.8)", text: "rgb(167,243,208)" };
+
+  // 计算 tooltip 显示位置：默认在节点上方，若上方空间不足则显示在下方
+  const TOOLTIP_W = 180;
+  const TOOLTIP_H = hasDistInfo || hasSenseInfo ? 72 : 38;
+  const GAP = 8; // 与节点的间距
+
+  const anchorCenterX = anchorRect.left + anchorRect.width / 2;
+  const anchorTop = anchorRect.top;
+  const anchorBottom = anchorRect.bottom;
+
+  // 优先显示在上方
+  let top = anchorTop - TOOLTIP_H - GAP;
+  // 若上方空间不足（top < 0 或超出视口），改为显示在下方
+  if (top < 4) {
+    top = anchorBottom + GAP;
+  }
+
+  // 水平居中，但不超出视口
+  let left = anchorCenterX - TOOLTIP_W / 2;
+  left = Math.max(4, Math.min(left, window.innerWidth - TOOLTIP_W - 4));
+
+  return createPortal(
+    <div
+      style={{
+        position: "fixed",
+        top,
+        left,
+        width: TOOLTIP_W,
+        zIndex: 99999,
+        pointerEvents: "none",
+        background: "rgba(15,23,42,0.97)",
+        border: "1px solid rgba(100,116,139,0.5)",
+        borderRadius: "5px",
+        padding: "4px 7px",
+        fontSize: "0.55rem",
+        fontFamily: "monospace",
+        color: "rgb(226,232,240)",
+        boxShadow: "0 4px 16px rgba(0,0,0,0.7)",
+        whiteSpace: "nowrap",
+        textAlign: "center",
+        display: "flex",
+        flexDirection: "column",
+        gap: "3px",
+      }}
+    >
+      {/* 节点名 + 状态 */}
+      <div style={{ color: "rgb(226,232,240)" }}>{tooltipBase}</div>
+
+      {/* 与当前位置的最短距离 */}
+      {hasDistInfo && (
+        <div style={{
+          display: "inline-flex", alignItems: "center", gap: "3px", justifyContent: "center",
+          background: distColor.bg, border: `1px solid ${distColor.border}`,
+          borderRadius: "3px", padding: "1px 6px",
+          color: distColor.text, fontWeight: "bold", fontSize: "0.6rem",
+        }}>
+          <span style={{ opacity: 0.8 }}>距当前位置</span>
+          <span style={{ fontSize: "0.75rem" }}>{distToPlayer}</span>
+          <span style={{ opacity: 0.8 }}>步</span>
+        </div>
+      )}
+
+      {/* 已感知信号 */}
+      {hasSenseInfo && (
+        <div style={{ display: "flex", alignItems: "center", gap: "3px", justifyContent: "center" }}>
+          <span style={{ opacity: 0.6, fontSize: "0.5rem" }}>已感知:</span>
+          {sensedSignals === null || sensedSignals!.length === 0 ? (
+            <span style={{
+              background: "rgba(30,41,59,0.8)", border: "1px solid rgba(71,85,105,0.5)",
+              borderRadius: "3px", padding: "1px 5px",
+              color: "rgb(100,116,139)", fontSize: "0.55rem",
+            }}>无信号</span>
+          ) : (
+            sensedSignals!.map((d, i) => {
+              const c = signalBadgeColor(d);
+              return (
+                <span key={i} style={{
+                  background: c.bg, border: `1px solid ${c.border}`,
+                  borderRadius: "3px", padding: "1px 5px",
+                  color: c.text, fontWeight: "bold", fontSize: "0.6rem",
+                }}>d={d}</span>
+              );
+            })
+          )}
+        </div>
+      )}
+    </div>,
+    document.body
+  );
+}
+
 // 选中节点高亮圈（持续停留，跟随点击移动）
 interface SelectedRingProps {
   cx: number;
@@ -144,7 +257,9 @@ const NodeCircle = React.memo(({
   onNodeClick, isClickable
 }: NodeCircleProps) => {
   const [hovered, setHovered] = useState(false);
-  // 不再需要本地点击状态，选中效果由父组件统一管理
+  // 用于定位 tooltip 的 DOM 引用
+  const circleRef = useRef<SVGCircleElement>(null);
+  const [anchorRect, setAnchorRect] = useState<DOMRect | null>(null);
 
   const isPlayer = status === "player";
   const isTreasure = status === "treasure";
@@ -162,33 +277,31 @@ const NodeCircle = React.memo(({
   const r = isPlayer ? NODE_R + 2 : isTreasure ? NODE_R + 1 : NODE_R;
   const strokeW = isPlayer ? 2.5 : isTreasure ? 2 : hovered ? 2 : 1.5;
 
-  // 距离徽章颜色
-  const distColor =
-    distToPlayer === 1 ? { bg: "rgba(127,29,29,0.9)", border: "rgba(239,68,68,0.8)", text: "rgb(252,165,165)" } :
-    distToPlayer === 2 ? { bg: "rgba(120,53,15,0.9)", border: "rgba(245,158,11,0.8)", text: "rgb(253,230,138)" } :
-    distToPlayer === 3 ? { bg: "rgba(6,78,59,0.9)", border: "rgba(16,185,129,0.8)", text: "rgb(167,243,208)" } :
-                         { bg: "rgba(15,23,42,0.9)", border: "rgba(100,116,139,0.5)", text: "rgb(148,163,184)" };
+  const handleMouseEnter = useCallback(() => {
+    setHovered(true);
+    if (circleRef.current) {
+      setAnchorRect(circleRef.current.getBoundingClientRect());
+    }
+  }, []);
 
-  // 信号值徽章颜色（与距离色系一致）
-  const signalBadgeColor = (d: number) =>
-    d === 1 ? { bg: "rgba(127,29,29,0.9)", border: "rgba(239,68,68,0.8)", text: "rgb(252,165,165)" } :
-    d === 2 ? { bg: "rgba(120,53,15,0.9)", border: "rgba(245,158,11,0.8)", text: "rgb(253,230,138)" } :
-              { bg: "rgba(6,78,59,0.9)", border: "rgba(16,185,129,0.8)", text: "rgb(167,243,208)" };
+  const handleMouseLeave = useCallback(() => {
+    setHovered(false);
+    setAnchorRect(null);
+  }, []);
 
   const handleClick = () => {
     if (!isClickable) return;
     onNodeClick(node);
   };
 
-  // tooltip 内容：基础信息 + 最短距离 + 已感知信号
   const hasDistInfo = !isPlayer && distToPlayer !== undefined && distToPlayer !== Infinity;
   const hasSenseInfo = sensedSignals !== undefined;
 
   return (
     <g
       style={{ cursor: isClickable ? "pointer" : "default" }}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
+      onMouseEnter={handleMouseEnter}
+      onMouseLeave={handleMouseLeave}
       onClick={handleClick}
     >
       {/* 发光效果 */}
@@ -202,8 +315,9 @@ const NodeCircle = React.memo(({
         />
       )}
 
-      {/* 主圆 */}
+      {/* 主圆（用于获取 BoundingClientRect） */}
       <circle
+        ref={circleRef}
         cx={cx} cy={cy} r={r}
         fill={fill}
         stroke={stroke}
@@ -254,8 +368,7 @@ const NodeCircle = React.memo(({
       {/* 候选点标识 */}
       {isCandidate && !isPath && (
         <text x={cx} y={cy + 0.5} textAnchor="middle" dominantBaseline="middle"
-          fontSize={7} fill={baseColors.textColor} opacity={0.9}
-          style={{ pointerEvents: "none", userSelect: "none" }}>
+          fontSize={7} fill={baseColors.textColor} style={{ pointerEvents: "none", userSelect: "none" }}>
           ◈
         </text>
       )}
@@ -269,75 +382,14 @@ const NodeCircle = React.memo(({
         </text>
       )}
 
-      {/* 悬停 Tooltip */}
-      {hovered && (
-        <foreignObject
-          x={cx - 90}
-          y={cy - r - (hasDistInfo || hasSenseInfo ? 104 : 76)}
-          width={180}
-          height={hasDistInfo || hasSenseInfo ? 68 : 36}
-          style={{ pointerEvents: "none", overflow: "visible" }}
-        >
-          <div
-            style={{
-              background: "rgba(15,23,42,0.97)",
-              border: "1px solid rgba(100,116,139,0.5)",
-              borderRadius: "5px",
-              padding: "4px 7px",
-              fontSize: "0.55rem",
-              fontFamily: "monospace",
-              color: "rgb(226,232,240)",
-              boxShadow: "0 4px 12px rgba(0,0,0,0.5)",
-              whiteSpace: "nowrap",
-              textAlign: "center",
-              display: "flex",
-              flexDirection: "column",
-              gap: "3px",
-            }}
-          >
-            {/* 节点名 + 状态 */}
-            <div style={{ color: "rgb(226,232,240)" }}>{tooltipBase}</div>
-
-            {/* 与当前位置的最短距离 */}
-            {hasDistInfo && (
-              <div style={{
-                display: "inline-flex", alignItems: "center", gap: "3px", justifyContent: "center",
-                background: distColor.bg, border: `1px solid ${distColor.border}`,
-                borderRadius: "3px", padding: "1px 6px",
-                color: distColor.text, fontWeight: "bold", fontSize: "0.6rem",
-              }}>
-                <span style={{ opacity: 0.8 }}>距当前位置</span>
-                <span style={{ fontSize: "0.75rem" }}>{distToPlayer}</span>
-                <span style={{ opacity: 0.8 }}>步</span>
-              </div>
-            )}
-
-            {/* 已感知信号 */}
-            {hasSenseInfo && (
-              <div style={{ display: "flex", alignItems: "center", gap: "3px", justifyContent: "center" }}>
-                <span style={{ opacity: 0.6, fontSize: "0.5rem" }}>已感知:</span>
-                {sensedSignals === null || sensedSignals!.length === 0 ? (
-                  <span style={{
-                    background: "rgba(30,41,59,0.8)", border: "1px solid rgba(71,85,105,0.5)",
-                    borderRadius: "3px", padding: "1px 5px",
-                    color: "rgb(100,116,139)", fontSize: "0.55rem",
-                  }}>无信号</span>
-                ) : (
-                  sensedSignals!.map((d, i) => {
-                    const c = signalBadgeColor(d);
-                    return (
-                      <span key={i} style={{
-                        background: c.bg, border: `1px solid ${c.border}`,
-                        borderRadius: "3px", padding: "1px 5px",
-                        color: c.text, fontWeight: "bold", fontSize: "0.6rem",
-                      }}>d={d}</span>
-                    );
-                  })
-                )}
-              </div>
-            )}
-          </div>
-        </foreignObject>
+      {/* Portal Tooltip：渲染到 body，始终在最顶层，不受 SVG 绘制顺序影响 */}
+      {hovered && anchorRect && (
+        <TooltipPortal
+          anchorRect={anchorRect}
+          tooltipBase={tooltipBase}
+          distToPlayer={hasDistInfo ? distToPlayer : undefined}
+          sensedSignals={hasSenseInfo ? sensedSignals : undefined}
+        />
       )}
     </g>
   );
@@ -368,23 +420,14 @@ export default function TreasureMap() {
   const distanceMap = useMemo(() => getDistanceMap(), [getDistanceMap]);
 
   // 建立感知信号 Map：node -> 有效信号值列表（过滤掉已找到宝藏对应的信号）
-  // 逻辑：取该节点最后一次感知记录的信号；若信号值对应的所有宝藏均已找到，则过滤掉该信号值
   const senseSignalMap = useMemo(() => {
     const map = new Map<string, number[] | null>();
-    // 已找到的宝藏集合（用于过滤信号）
-    const foundTreasureIds = new Set(treasures.filter(t => t.found).map(t => t.id));
-    // 未找到的宝藏 id 集合
     const activeTreasureIds = new Set(treasures.filter(t => !t.found).map(t => t.id));
 
-    // 遍历所有感知记录（按顺序，后面的覆盖前面的）
     for (const record of senseHistory) {
       if (record.signal === null || record.signal.length === 0) {
-        // 无信号：直接记录 null
         map.set(record.position, null);
       } else {
-        // 有信号：过滤掉所有对应宝藏均已找到的信号值
-        // 判断依据：若该节点在某宝藏的 foundAt 位置，或该宝藏已找到且该信号值与找到时的距离一致
-        // 简化处理：只要还有未找到的宝藏，就保留有效信号；若所有宝藏都找到了则不显示
         const validSignals = activeTreasureIds.size > 0 ? record.signal : [];
         map.set(record.position, validSignals.length > 0 ? validSignals : null);
       }
@@ -500,7 +543,7 @@ export default function TreasureMap() {
           const treasureLabel = treasures.find(t => t.found && t.foundAt === node)?.id ?? "";
           const distToPlayer = distanceMap.get(node);
 
-          // tooltip 基础文本（节点名+状态+候选信息，不含距离和信号）
+          // tooltip 基础文本
           const baseLabels: Partial<Record<NodeStatus, string>> = {
             active: "可通行节点", player: "当前位置", treasure: "已找到宝藏",
             "candidate-T1": "T1 候选点", "candidate-T2": "T2 候选点",
@@ -514,7 +557,7 @@ export default function TreasureMap() {
           let tooltipBase = `${node} — ${baseLabels[status] || status}`;
           if (candidateTreasures.length > 0) tooltipBase += ` | ${candidateTreasures.join(", ")}`;
 
-          // 该节点的已感知信号（undefined=未感知，null=无信号，数组=有信号值）
+          // 该节点的已感知信号
           const sensedSignals = senseSignalMap.has(node) ? senseSignalMap.get(node)! : undefined;
           const isSelected = selectedNode === node;
 
